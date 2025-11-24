@@ -3,9 +3,14 @@ import Foundation
 final class NetworkConfigurator {
     private let networksetup = "/usr/sbin/networksetup"
 
-    func enablePACProxy(pacPath: String) throws {
+    enum ProxyState {
+        case none
+        case pac
+        case socks
+    }
+
+    func enablePACProxy(pacURLString: String) throws {
         let services = try listServices()
-        let pacURLString = URL(fileURLWithPath: pacPath).absoluteString
         for service in services {
             try run(["-setsocksfirewallproxystate", service, "off"])
             try run(["-setautoproxyurl", service, pacURLString])
@@ -28,6 +33,32 @@ final class NetworkConfigurator {
             _ = try? run(["-setautoproxystate", service, "off"])
             _ = try? run(["-setsocksfirewallproxystate", service, "off"])
         }
+    }
+
+    func detectProxyState() -> ProxyState {
+        guard let services = try? listServices() else { return .none }
+        var hasPac = false
+        var hasSocks = false
+
+        for service in services {
+            if let pac = try? runAndCapture(["-getautoproxyurl", service]) {
+                if pac.lowercased().contains("enabled: yes") &&
+                    (pac.contains(".proxy-tray/proxy.pac") || pac.contains("data:application/x-javascript-config;base64")) {
+                    hasPac = true
+                }
+            }
+            if let socks = try? runAndCapture(["-getsocksfirewallproxy", service]) {
+                if socks.lowercased().contains("enabled: yes") &&
+                    socks.contains("127.0.0.1") &&
+                    socks.contains("1080") {
+                    hasSocks = true
+                }
+            }
+        }
+
+        if hasSocks { return .socks }
+        if hasPac { return .pac }
+        return .none
     }
 
     private func listServices() throws -> [String] {

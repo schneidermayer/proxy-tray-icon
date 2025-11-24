@@ -5,6 +5,11 @@ struct CIDREntry {
     let mask: String
 }
 
+struct PacArtifact {
+    let path: String
+    let autoProxyURL: String
+}
+
 final class ConfigManager {
     private let baseDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".proxy-tray", isDirectory: true)
@@ -48,7 +53,7 @@ final class ConfigManager {
         return entries
     }
 
-    func writePAC(for entries: [CIDREntry]) throws -> String {
+    func writePAC(for entries: [CIDREntry]) throws -> PacArtifact {
         let pacURL = baseDir.appendingPathComponent("proxy.pac")
         var rules: [String] = []
         for entry in entries {
@@ -56,7 +61,12 @@ final class ConfigManager {
         }
         let body = pacTemplate(replacements: ["WHITELIST": rules.joined(separator: ",\n")])
         try body.write(to: pacURL, atomically: true, encoding: .utf8)
-        return pacURL.path
+        guard let data = body.data(using: .utf8) else {
+            throw NSError(domain: "ProxyTray", code: 0, userInfo: [NSLocalizedDescriptionKey: "Could not encode PAC data"])
+        }
+        let b64 = data.base64EncodedString()
+        let dataURL = "data:application/x-javascript-config;base64,\(b64)"
+        return PacArtifact(path: pacURL.path, autoProxyURL: dataURL)
     }
 
     private func parse(line: String) -> CIDREntry? {

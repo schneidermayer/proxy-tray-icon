@@ -94,6 +94,11 @@ final class SshManager {
         }
     }
 
+    func isTunnelRunning(on port: Int = 1080) -> Bool {
+        guard let pids = try? listPIDsListening(on: port) else { return false }
+        return !pids.isEmpty
+    }
+
     private func listPIDsListening(on port: Int) throws -> [Int32] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")

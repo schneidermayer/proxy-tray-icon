@@ -19,6 +19,7 @@ final class ProxyController {
 
     func bootstrap() {
         config.ensureFilesExist()
+        detectExistingProxy()
     }
 
     func enableProxy() {
@@ -140,13 +141,30 @@ final class ProxyController {
                 try network.enableRouteAllProxy()
             } else {
                 let cidrs = try config.loadWhitelist()
-                let pacPath = try config.writePAC(for: cidrs)
-                try network.enablePACProxy(pacPath: pacPath)
+                let pac = try config.writePAC(for: cidrs)
+                try network.enablePACProxy(pacURLString: pac.autoProxyURL)
             }
             state.proxyActive = true
         } catch {
             presentError("Failed to update system proxy: \(error.localizedDescription)")
             cleanup()
+        }
+    }
+
+    private func detectExistingProxy() {
+        let netState = network.detectProxyState()
+        let tunnelRunning = ssh.isTunnelRunning()
+        switch netState {
+        case .socks where tunnelRunning:
+            state.routeAll = true
+            UserDefaults.standard.set(true, forKey: "RouteAll")
+            state.proxyActive = true
+        case .pac where tunnelRunning:
+            state.routeAll = false
+            UserDefaults.standard.set(false, forKey: "RouteAll")
+            state.proxyActive = true
+        default:
+            break
         }
     }
 

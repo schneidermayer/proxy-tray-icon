@@ -2,58 +2,26 @@ import Cocoa
 
 enum IconFactory {
     static func icon(active: Bool) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        drawBackground(in: NSRect(origin: .zero, size: size), active: active)
-        drawSymbol(in: NSRect(origin: .zero, size: size), active: active)
-        image.unlockFocus()
-        image.isTemplate = false
-        image.size = size
-        if !active {
-            image.lockFocus()
-            NSGraphicsContext.current?.compositingOperation = .sourceAtop
-            NSColor(calibratedWhite: 1.0, alpha: 0.5).set()
-            NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
-            image.unlockFocus()
+        return active ? filledIcon(alpha: 1.0) : filledIcon(alpha: 0.4)
+    }
+
+    private static func filledIcon(alpha: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: 9, y: 18))
+            path.curve(to: NSPoint(x: 0, y: 15.75), controlPoint1: NSPoint(x: 4.03, y: 18), controlPoint2: NSPoint(x: 0, y: 17.5))
+            path.line(to: NSPoint(x: 0, y: 5.25))
+            path.curve(to: NSPoint(x: 9, y: 0), controlPoint1: NSPoint(x: 0, y: 2.25), controlPoint2: NSPoint(x: 4.03, y: 0))
+            path.curve(to: NSPoint(x: 18, y: 5.25), controlPoint1: NSPoint(x: 13.97, y: 0), controlPoint2: NSPoint(x: 18, y: 2.25))
+            path.line(to: NSPoint(x: 18, y: 15.75))
+            path.curve(to: NSPoint(x: 9, y: 18), controlPoint1: NSPoint(x: 18, y: 17.5), controlPoint2: NSPoint(x: 13.97, y: 18))
+            path.close()
+
+            NSColor.black.withAlphaComponent(alpha).setFill()
+            path.fill()
+            return true
         }
+        image.isTemplate = true
         return image
-    }
-
-    private static func drawBackground(in rect: NSRect, active: Bool) {
-        // Background stays transparent; only the white glyph is rendered.
-        NSColor.clear.setFill()
-        NSBezierPath(rect: rect).fill()
-    }
-
-    private static func drawSymbol(in rect: NSRect, active: Bool) {
-        let glyphAlpha: CGFloat = active ? 1.0 : 0.4
-        let color = NSColor.white.withAlphaComponent(glyphAlpha)
-
-        let bounds = rect.insetBy(dx: 3.6, dy: 3.6)
-        let shaft = NSBezierPath()
-        shaft.move(to: NSPoint(x: bounds.minX, y: bounds.midY))
-        shaft.line(to: NSPoint(x: bounds.maxX - 3, y: bounds.midY))
-        color.setStroke()
-        shaft.lineWidth = 1.6
-        shaft.lineCapStyle = .round
-        shaft.stroke()
-
-        // arrow head
-        let tip = NSPoint(x: bounds.maxX, y: bounds.midY)
-        let head = NSBezierPath()
-        head.move(to: tip)
-        head.line(to: NSPoint(x: tip.x - 2.6, y: tip.y + 2.0))
-        head.line(to: NSPoint(x: tip.x - 2.6, y: tip.y - 2.0))
-        head.close()
-        color.setFill()
-        head.fill()
-
-        // subtle start node (hollow dot)
-        let nodeRect = NSRect(x: bounds.minX - 1.6, y: bounds.midY - 1.6, width: 3.2, height: 3.2)
-        let node = NSBezierPath(ovalIn: nodeRect)
-        node.lineWidth = 1.4
-        color.setStroke()
-        node.stroke()
     }
 }
