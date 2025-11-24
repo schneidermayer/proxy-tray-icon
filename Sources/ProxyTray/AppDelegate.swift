@@ -4,6 +4,8 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
+    private var statusMenuItem: NSMenuItem!
+    private var toggleMenuItem: NSMenuItem!
     private let controller = ProxyController()
 
     static func main() {
@@ -27,8 +29,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu = NSMenu()
 
-        menu.addItem(withTitle: "Enable Proxy", action: #selector(toggleProxy), keyEquivalent: "")
-        menu.addItem(withTitle: "Disable Proxy", action: #selector(disableProxy), keyEquivalent: "")
+        statusMenuItem = NSMenuItem(title: "Status: Inactive", action: nil, keyEquivalent: "")
+        menu.addItem(statusMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        toggleMenuItem = NSMenuItem(title: "Enable Proxy", action: #selector(toggleProxy), keyEquivalent: "p")
+        menu.addItem(toggleMenuItem)
         menu.addItem(NSMenuItem.separator())
 
         let routeAllItem = NSMenuItem(title: "Route All Traffic", action: #selector(toggleRouteAll), keyEquivalent: "")
@@ -47,7 +54,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageLeading
     }
 
-    @objc private func toggleProxy() { controller.enableProxy() }
+    @objc private func toggleProxy() {
+        if controller.state.proxyActive {
+            controller.disableProxy()
+        } else {
+            controller.enableProxy()
+        }
+    }
     @objc private func disableProxy() { controller.disableProxy() }
     @objc private func toggleRouteAll() { controller.toggleRouteAll() }
     @objc private func openWhitelist() { controller.openWhitelist() }
@@ -58,8 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshUI(state: ProxyState) {
         statusItem.button?.image = IconFactory.icon(active: state.proxyActive)
-        menu.item(at: 0)?.isEnabled = !state.proxyActive
-        menu.item(at: 1)?.isEnabled = state.proxyActive
+        statusMenuItem.title = state.proxyActive ? "Status: Active" : "Status: Inactive"
+        toggleMenuItem.title = state.proxyActive ? "Disable Proxy" : "Enable Proxy"
+        toggleMenuItem.isEnabled = true
         if let routeAllItem = menu.items.first(where: { $0.action == #selector(toggleRouteAll) }) {
             routeAllItem.state = state.routeAll ? .on : .off
             routeAllItem.title = state.routeAll ? "Route All Traffic (on)" : "Route All Traffic"
