@@ -8,6 +8,13 @@ A small Swift 5 menu bar agent that starts an SSH dynamic tunnel, exposes it as 
    - The app stays attached to the terminal session; keep the window open while running.
 3. A new tray icon will appear. Use the menu to set the SSH password first, then enable the proxy.
 
+### Build a standalone app bundle
+If you want a double-clickable `.app` without manual steps:
+1. Run `./Scripts/build-app.sh`
+2. Launch `.build/ProxyTray.app`
+
+The script builds a release binary and assembles a bundle at `.build/ProxyTray.app`. An `.icns` from `Scripts/icon512.icns` is bundled and set as the Finder icon; replace that file if you want a different icon. The tray glyph itself is still drawn in code. If you want a stable launcher, symlink it: `ln -sfn "$(pwd)/.build/ProxyTray.app" /Applications/ProxyTray.app`.
+
 ## Menu actions
 - **Enable Proxy**: decrypts the stored SSH password, starts `ssh -N -D 1080 -p <port> <user>@<host>` using SSH_ASKPASS, then applies proxy settings.
 - **Disable Proxy**: stops the tunnel and turns off proxy settings.
