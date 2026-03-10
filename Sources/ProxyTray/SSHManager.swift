@@ -1,16 +1,21 @@
 import Foundation
 
 final class SshManager {
+    private let stateQueue = DispatchQueue(label: "ProxyTray.SshManager.state")
     private var task: Process?
     private var askPassURL: URL?
+    private var expectedTerminationPIDs: Set<Int32> = []
+
+    var onUnexpectedExit: ((String) -> Void)?
 
     func start(settings: SshSettings, password: String, completion: @escaping (Result<Void, Error>) -> Void) {
         stop()
         do {
             let helperURL = try writeAskPass(password: password)
-            askPassURL = helperURL
 
             let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = [
                 "-N",
@@ -28,41 +33,77 @@ final class SshManager {
                 "SSH_ASKPASS_REQUIRE": "force",
                 "DISPLAY": "ssh-askpass"
             ]
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            let completionQueue = DispatchQueue(label: "ProxyTray.SshManager.startCompletion")
             var completed = false
-            process.terminationHandler = { [weak self] proc in
-                guard proc.terminationStatus == 0 else {
-                    if !completed {
-                        completed = true
-                        completion(.failure(NSError(domain: "ProxyTray", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "SSH exited with status \(proc.terminationStatus)"])))
+            let finish: (Result<Void, Error>) -> Void = { result in
+                completionQueue.sync {
+                    guard !completed else { return }
+                    completed = true
+                    DispatchQueue.main.async {
+                        completion(result)
                     }
-                    self?.cleanupAskPass()
+                }
+            }
+
+            process.terminationHandler = { [weak self] proc in
+                let message = self?.terminationMessage(
+                    for: proc,
+                    stdout: self?.readPipe(stdout) ?? "",
+                    stderr: self?.readPipe(stderr) ?? ""
+                ) ?? "SSH connection closed."
+                self?.clearTaskIfMatching(proc)
+                self?.cleanupAskPass()
+
+                if self?.consumeExpectedTermination(for: proc.processIdentifier) == true {
                     return
                 }
-                self?.cleanupAskPass()
+
+                let startupPending = completionQueue.sync { !completed }
+                if startupPending {
+                    finish(.failure(NSError(
+                        domain: "ProxyTray",
+                        code: Int(proc.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: message]
+                    )))
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    self?.onUnexpectedExit?(message)
+                }
+            }
+
+            stateQueue.sync {
+                askPassURL = helperURL
             }
             try process.run()
-            self.task = process
+            stateQueue.sync {
+                task = process
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                if process.isRunning && !completed {
-                    completed = true
-                    completion(.success(()))
+                if process.isRunning {
+                    finish(.success(()))
                 }
             }
         } catch {
+            cleanupAskPass()
             completion(.failure(error))
         }
     }
 
     func stop() {
-        if let proc = task {
-            if proc.isRunning {
-                proc.terminate()
-                proc.waitUntilExit()
+        let proc = stateQueue.sync { task }
+        if let proc, proc.isRunning {
+            _ = stateQueue.sync {
+                expectedTerminationPIDs.insert(proc.processIdentifier)
             }
-            task = nil
+            proc.terminate()
+            proc.waitUntilExit()
         }
+        clearTaskIfMatching(proc)
         cleanupAskPass()
         killListeners(on: 1080)
     }
@@ -77,10 +118,14 @@ final class SshManager {
     }
 
     private func cleanupAskPass() {
-        if let url = askPassURL {
+        let url = stateQueue.sync { () -> URL? in
+            let current = askPassURL
+            askPassURL = nil
+            return current
+        }
+        if let url {
             try? FileManager.default.removeItem(at: url)
         }
-        askPassURL = nil
     }
 
     private func killListeners(on port: Int) {
@@ -113,5 +158,37 @@ final class SshManager {
         return output
             .split(separator: "\n")
             .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
+    private func clearTaskIfMatching(_ process: Process?) {
+        stateQueue.sync {
+            if task === process {
+                task = nil
+            }
+        }
+    }
+
+    private func consumeExpectedTermination(for pid: Int32) -> Bool {
+        stateQueue.sync {
+            expectedTerminationPIDs.remove(pid) != nil
+        }
+    }
+
+    private func readPipe(_ pipe: Pipe) -> String {
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func terminationMessage(for process: Process, stdout: String, stderr: String) -> String {
+        if !stderr.isEmpty { return stderr }
+        if !stdout.isEmpty { return stdout }
+        if process.terminationReason == .uncaughtSignal {
+            return "SSH terminated by signal \(process.terminationStatus)."
+        }
+        if process.terminationStatus == 0 {
+            return "SSH connection closed."
+        }
+        return "SSH exited with status \(process.terminationStatus)."
     }
 }

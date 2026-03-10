@@ -18,11 +18,11 @@ The script builds a release binary and assembles a bundle at `.build/ProxyTray.a
 ## Menu actions
 - **Enable Proxy**: decrypts the stored SSH password, starts `ssh -N -D 1080 -p <port> <user>@<host>` using SSH_ASKPASS, then applies proxy settings.
 - **Disable Proxy**: stops the tunnel and turns off proxy settings.
+- **Restart Proxy**: stops the current tunnel, clears the proxy settings, and reconnects immediately.
 - **Route All Traffic**: toggles between “all traffic via proxy” (direct SOCKS config) and “whitelist only” (PAC file).
 - **Open Whitelist File**: opens `~/.proxy-tray/whitelist.txt` for editing.
 - **Update SSH Settings**: set SSH host, username, and port (stored in `~/.proxy-tray/ssh.json`).
 - **Update SSH Password**: securely re-encrypts and stores the password.
-- **Cleanup (stop proxy)**: manually tears down proxy + tunnel (only clickable when inactive).
 - **Quit**: stops proxy/tunnel and exits.
 
 ## Whitelist format
@@ -47,4 +47,5 @@ Wildcards (`*`) are **not** supported. All hosts **not** matching these CIDRs go
 ## Notes
 - If the SSH server listens on a different host or port, update it from the tray menu via **Update SSH Settings**.
 - The app calls `/usr/sbin/networksetup` for every active network service to flip between PAC and SOCKS modes; no global reset of unrelated settings is performed.
-- Cleanup ensures the SOCKS proxy is off and the ssh process on port 1080 is terminated so the port is free again.
+- If the managed `ssh` process exits unexpectedly, ProxyTray disables the system proxy automatically so macOS is not left pointing at a dead local SOCKS listener.
+- On launch, stale PAC/SOCKS settings from an earlier crashed session are cleared if no tunnel is listening on port `1080`.

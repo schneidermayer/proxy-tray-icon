@@ -46,7 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Update SSH Settings", action: #selector(updateSshSettings), keyEquivalent: "")
         menu.addItem(withTitle: "Update SSH Password", action: #selector(updatePassword), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "Cleanup (stop proxy)", action: #selector(cleanup), keyEquivalent: "")
+        menu.addItem(withTitle: "Restart Proxy", action: #selector(restartProxy), keyEquivalent: "r")
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
 
         statusItem.menu = menu
@@ -61,11 +61,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             controller.enableProxy()
         }
     }
-    @objc private func disableProxy() { controller.disableProxy() }
     @objc private func toggleRouteAll() { controller.toggleRouteAll() }
     @objc private func openWhitelist() { controller.openWhitelist() }
     @objc private func updateSshSettings() { controller.promptForSshSettings() }
-    @objc private func cleanup() { controller.cleanup() }
+    @objc private func restartProxy() { controller.restartProxy() }
     @objc private func updatePassword() { controller.promptForPassword() }
     @objc private func quit() { controller.cleanup(); NSApp.terminate(nil) }
 
@@ -78,8 +77,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             routeAllItem.state = state.routeAll ? .on : .off
             routeAllItem.title = state.routeAll ? "Route All Traffic (on)" : "Route All Traffic"
         }
-        if let cleanupItem = menu.items.first(where: { $0.action == #selector(cleanup) }) {
-            cleanupItem.isEnabled = !state.proxyActive
+        if let restartItem = menu.items.first(where: { $0.action == #selector(restartProxy) }) {
+            restartItem.isEnabled = state.proxyActive
         }
     }
 }

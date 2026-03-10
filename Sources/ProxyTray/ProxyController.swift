@@ -17,6 +17,12 @@ final class ProxyController {
 
     var onStateChange: ((ProxyState) -> Void)?
 
+    init() {
+        ssh.onUnexpectedExit = { [weak self] message in
+            self?.handleUnexpectedTunnelExit(message: message)
+        }
+    }
+
     func bootstrap() {
         config.ensureFilesExist()
         detectExistingProxy()
@@ -44,6 +50,12 @@ final class ProxyController {
 
     func disableProxy() {
         cleanup()
+    }
+
+    func restartProxy() {
+        guard state.proxyActive else { return }
+        cleanup()
+        enableProxy()
     }
 
     func toggleRouteAll() {
@@ -163,9 +175,19 @@ final class ProxyController {
             state.routeAll = false
             UserDefaults.standard.set(false, forKey: "RouteAll")
             state.proxyActive = true
+        case .socks, .pac:
+            network.disableProxy()
+            state.proxyActive = false
         default:
             break
         }
+    }
+
+    private func handleUnexpectedTunnelExit(message: String) {
+        guard state.proxyActive else { return }
+        network.disableProxy()
+        state.proxyActive = false
+        presentError("SSH tunnel disconnected. Proxy was disabled automatically.\n\n\(message)")
     }
 
     private func presentError(_ message: String) {
