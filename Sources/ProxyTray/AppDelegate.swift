@@ -5,7 +5,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var statusMenuItem: NSMenuItem!
+    private var versionMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
+    private lazy var appVersion = resolveAppVersion()
     private lazy var statusItemTooltip = makeStatusItemTooltip()
     private let controller = ProxyController()
 
@@ -32,6 +34,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusMenuItem = NSMenuItem(title: "Status: Inactive", action: nil, keyEquivalent: "")
         menu.addItem(statusMenuItem)
+        versionMenuItem = NSMenuItem(title: makeVersionMenuTitle(), action: nil, keyEquivalent: "")
+        versionMenuItem.isEnabled = false
+        menu.addItem(versionMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -85,8 +90,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeStatusItemTooltip() -> String {
-        guard let version = resolveAppVersion() else { return "ProxyTray" }
+        guard let version = appVersion else { return "ProxyTray" }
         return "ProxyTray \(version)"
+    }
+
+    private func makeVersionMenuTitle() -> String {
+        guard let version = appVersion else { return "Version unknown" }
+        return "Version \(version)"
     }
 
     private func resolveAppVersion() -> String? {
