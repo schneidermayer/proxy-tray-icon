@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var menu: NSMenu!
     private var statusMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
+    private lazy var statusItemTooltip = makeStatusItemTooltip()
     private let controller = ProxyController()
 
     static func main() {
@@ -70,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshUI(state: ProxyState) {
         statusItem.button?.image = IconFactory.icon(active: state.proxyActive)
+        statusItem.button?.toolTip = statusItemTooltip
         statusMenuItem.title = state.proxyActive ? "Status: Active" : "Status: Inactive"
         toggleMenuItem.title = state.proxyActive ? "Disable Proxy" : "Enable Proxy"
         toggleMenuItem.isEnabled = true
@@ -80,5 +82,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let restartItem = menu.items.first(where: { $0.action == #selector(restartProxy) }) {
             restartItem.isEnabled = state.proxyActive
         }
+    }
+
+    private func makeStatusItemTooltip() -> String {
+        guard let version = resolveAppVersion() else { return "ProxyTray" }
+        return "ProxyTray \(version)"
+    }
+
+    private func resolveAppVersion() -> String? {
+        if let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            let trimmedVersion = bundleVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedVersion.isEmpty {
+                return trimmedVersion
+            }
+        }
+
+        let versionFileURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("VERSION")
+        guard let version = try? String(contentsOf: versionFileURL, encoding: .utf8) else {
+            return nil
+        }
+
+        let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedVersion.isEmpty ? nil : trimmedVersion
     }
 }

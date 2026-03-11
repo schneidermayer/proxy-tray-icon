@@ -7,8 +7,19 @@ BIN="$ROOT/.build/release/ProxyTray"
 ICON_SRC="$ROOT/Scripts/icon512.icns"
 ICON_NAME="icon512"
 TARGET="/Applications/ProxyTray.app"
+VERSION_FILE="$ROOT/VERSION"
 
-echo "Building release binary..."
+APP_VERSION="${APP_VERSION:-}"
+if [[ -z "$APP_VERSION" && -f "$VERSION_FILE" ]]; then
+  APP_VERSION="$(awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); print; exit }' "$VERSION_FILE")"
+fi
+
+if [[ -z "$APP_VERSION" ]]; then
+  echo "No app version found. Set APP_VERSION or populate $VERSION_FILE." >&2
+  exit 1
+fi
+
+echo "Building release binary for version $APP_VERSION..."
 swift build -c release
 
 echo "Assembling app bundle at $APP"
@@ -21,9 +32,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <dict>
     <key>CFBundleExecutable</key><string>ProxyTray</string>
     <key>CFBundleIdentifier</key><string>net.hsch.proxytray</string>
-    <key>CFBundleName</key><string>Proxy Tray Icoon</string>
-    <key>CFBundleVersion</key><string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleName</key><string>ProxyTray</string>
+    <key>CFBundleVersion</key><string>APP_VERSION_PLACEHOLDER</string>
+    <key>CFBundleShortVersionString</key><string>APP_VERSION_PLACEHOLDER</string>
     <key>CFBundleIconFile</key><string>ICON_NAME_PLACEHOLDER</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -31,6 +42,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
+sed -i '' "s/APP_VERSION_PLACEHOLDER/$APP_VERSION/g" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/"
 
 if [[ -f "$ICON_SRC" ]]; then
