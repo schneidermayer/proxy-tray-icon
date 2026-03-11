@@ -18,8 +18,8 @@ final class ProxyController {
     var onStateChange: ((ProxyState) -> Void)?
 
     init() {
-        ssh.onUnexpectedExit = { [weak self] message in
-            self?.handleUnexpectedTunnelExit(message: message)
+        ssh.onUnexpectedExit = { [weak self] _ in
+            self?.handleUnexpectedTunnelExit()
         }
     }
 
@@ -183,11 +183,10 @@ final class ProxyController {
         }
     }
 
-    private func handleUnexpectedTunnelExit(message: String) {
+    private func handleUnexpectedTunnelExit() {
         guard state.proxyActive else { return }
         network.disableProxy()
         state.proxyActive = false
-        presentError("SSH tunnel disconnected. Proxy was disabled automatically.\n\n\(message)")
     }
 
     private func presentError(_ message: String) {
