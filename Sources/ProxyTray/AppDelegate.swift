@@ -5,7 +5,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var statusMenuItem: NSMenuItem!
-    private var versionMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
     private lazy var appVersion = resolveAppVersion()
     private lazy var statusItemTooltip = makeStatusItemTooltip()
@@ -32,11 +31,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu = NSMenu()
 
-        statusMenuItem = NSMenuItem(title: "Status: Inactive", action: nil, keyEquivalent: "")
+        statusMenuItem = NSMenuItem(title: makeStatusMenuTitle(active: false), action: nil, keyEquivalent: "")
         menu.addItem(statusMenuItem)
-        versionMenuItem = NSMenuItem(title: makeVersionMenuTitle(), action: nil, keyEquivalent: "")
-        versionMenuItem.isEnabled = false
-        menu.addItem(versionMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -77,7 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshUI(state: ProxyState) {
         statusItem.button?.image = IconFactory.icon(active: state.proxyActive)
         statusItem.button?.toolTip = statusItemTooltip
-        statusMenuItem.title = state.proxyActive ? "Status: Active" : "Status: Inactive"
+        statusMenuItem.title = makeStatusMenuTitle(active: state.proxyActive)
         toggleMenuItem.title = state.proxyActive ? "Disable Proxy" : "Enable Proxy"
         toggleMenuItem.isEnabled = true
         if let routeAllItem = menu.items.first(where: { $0.action == #selector(toggleRouteAll) }) {
@@ -94,9 +90,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return "ProxyTray \(version)"
     }
 
-    private func makeVersionMenuTitle() -> String {
-        guard let version = appVersion else { return "Version unknown" }
-        return "Version \(version)"
+    private func makeStatusMenuTitle(active: Bool) -> String {
+        let status = active ? "Active" : "Inactive"
+        guard let version = appVersion else { return "Status: \(status)" }
+        return "\(version) – Status: \(status)"
     }
 
     private func resolveAppVersion() -> String? {
