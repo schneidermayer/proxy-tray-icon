@@ -11,7 +11,7 @@ A small Swift 5 menu bar agent that starts an SSH dynamic tunnel with public-key
 
 ### Build a standalone app bundle
 If you want a double-clickable `.app` without manual steps:
-1. Set the release number in `VERSION` (current: `1.0`).
+1. Set the release number in `VERSION` (current: `1.1`).
 2. Run `./Scripts/build-app.sh`
 3. Launch `.build/ProxyTray.app`
 
