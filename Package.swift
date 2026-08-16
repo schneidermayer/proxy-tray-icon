@@ -12,6 +12,11 @@ let package = Package(
             name: "ProxyTray",
             path: "Sources/ProxyTray",
             resources: []
+        ),
+        .testTarget(
+            name: "ProxyTrayTests",
+            dependencies: ["ProxyTray"],
+            path: "Tests/ProxyTrayTests"
         )
     ]
 )

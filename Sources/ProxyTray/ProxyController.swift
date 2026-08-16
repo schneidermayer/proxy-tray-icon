@@ -6,7 +6,6 @@ struct ProxyState {
 }
 
 final class ProxyController {
-    private let vault = PasswordVault()
     private let config = ConfigManager()
     private let network = NetworkConfigurator()
     private let ssh = SshManager()
@@ -32,19 +31,20 @@ final class ProxyController {
         guard !state.proxyActive else { return }
         do {
             let sshSettings = try config.loadSshSettings()
-            let password = try vault.readPassword()
-            ssh.start(settings: sshSettings, password: password) { [weak self] result in
+            ssh.start(settings: sshSettings) { [weak self] result in
                 DispatchQueue.main.async {
                     switch result {
                     case .success:
                         self?.activateSystemProxy()
                     case .failure(let error):
-                        self?.presentError(error.localizedDescription)
+                        self?.presentError(
+                            "Could not connect using SSH key authentication. Make sure your key is available in ~/.ssh or ssh-agent and authorized on the server.\n\n\(error.localizedDescription)"
+                        )
                     }
                 }
             }
         } catch {
-            presentError("Missing credentials or SSH settings.\nUse 'Update SSH Settings' and 'Update SSH Password' first.\n\n\(error.localizedDescription)")
+            presentError("Missing or invalid SSH settings.\nUse 'Update SSH Settings' first.\n\n\(error.localizedDescription)")
         }
     }
 
@@ -69,27 +69,6 @@ final class ProxyController {
     func openWhitelist() {
         config.ensureFilesExist()
         NSWorkspace.shared.open(URL(fileURLWithPath: config.whitelistPath))
-    }
-
-    func promptForPassword() {
-        let alert = NSAlert()
-        alert.messageText = "SSH password"
-        alert.informativeText = "The password will be encrypted locally and stored for reuse."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        alert.accessoryView = field
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            let newPassword = field.stringValue
-            do {
-                try vault.storePassword(password: newPassword)
-            } catch {
-                presentError("Could not store password: \(error.localizedDescription)")
-            }
-        }
     }
 
     func promptForSshSettings() {

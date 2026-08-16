@@ -3,36 +3,18 @@ import Foundation
 final class SshManager {
     private let stateQueue = DispatchQueue(label: "ProxyTray.SshManager.state")
     private var task: Process?
-    private var askPassURL: URL?
     private var expectedTerminationPIDs: Set<Int32> = []
 
     var onUnexpectedExit: ((String) -> Void)?
 
-    func start(settings: SshSettings, password: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    func start(settings: SshSettings, completion: @escaping (Result<Void, Error>) -> Void) {
         stop()
         do {
-            let helperURL = try writeAskPass(password: password)
-
             let process = Process()
             let stdout = Pipe()
             let stderr = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
-                "-N",
-                "-D", "1080",
-                "-p", "\(settings.port)",
-                "-o", "ExitOnForwardFailure=yes",
-                "-o", "ServerAliveInterval=30",
-                "-o", "ServerAliveCountMax=3",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "\(settings.username)@\(settings.host)"
-            ]
-            process.environment = [
-                "SSH_ASKPASS": helperURL.path,
-                "SSH_ASKPASS_REQUIRE": "force",
-                "DISPLAY": "ssh-askpass"
-            ]
+            process.arguments = Self.arguments(for: settings)
             process.standardOutput = stdout
             process.standardError = stderr
 
@@ -55,7 +37,6 @@ final class SshManager {
                     stderr: self?.readPipe(stderr) ?? ""
                 ) ?? "SSH connection closed."
                 self?.clearTaskIfMatching(proc)
-                self?.cleanupAskPass()
 
                 if self?.consumeExpectedTermination(for: proc.processIdentifier) == true {
                     return
@@ -76,9 +57,6 @@ final class SshManager {
                 }
             }
 
-            stateQueue.sync {
-                askPassURL = helperURL
-            }
             try process.run()
             stateQueue.sync {
                 task = process
@@ -89,7 +67,6 @@ final class SshManager {
                 }
             }
         } catch {
-            cleanupAskPass()
             completion(.failure(error))
         }
     }
@@ -104,28 +81,26 @@ final class SshManager {
             proc.waitUntilExit()
         }
         clearTaskIfMatching(proc)
-        cleanupAskPass()
         killListeners(on: 1080)
     }
 
-    private func writeAskPass(password: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("proxytray-askpass.sh")
-        let escaped = password.replacingOccurrences(of: "'", with: "'\"'\"'")
-        let script = "#!/bin/bash\nprintf '%s\\n' '\(escaped)'\n"
-        try script.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        return url
-    }
-
-    private func cleanupAskPass() {
-        let url = stateQueue.sync { () -> URL? in
-            let current = askPassURL
-            askPassURL = nil
-            return current
-        }
-        if let url {
-            try? FileManager.default.removeItem(at: url)
-        }
+    static func arguments(for settings: SshSettings) -> [String] {
+        [
+            "-N",
+            "-D", "1080",
+            "-p", "\(settings.port)",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "BatchMode=yes",
+            "-o", "PubkeyAuthentication=yes",
+            "-o", "PreferredAuthentications=publickey",
+            "-o", "PasswordAuthentication=no",
+            "-o", "KbdInteractiveAuthentication=no",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "\(settings.username)@\(settings.host)"
+        ]
     }
 
     private func killListeners(on port: Int) {

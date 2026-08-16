@@ -1,12 +1,13 @@
 # ProxyTray (Swift menu bar agent)
 
-A small Swift 5 menu bar agent that starts an SSH dynamic tunnel, exposes it as a system SOCKS proxy on `127.0.0.1:1080`, and switches the macOS proxy settings between a whitelist-driven PAC file or a route-all mode. Passwords are encrypted locally; the status-bar icon dims when inactive and is fully opaque when active.
+A small Swift 5 menu bar agent that starts an SSH dynamic tunnel with public-key authentication, exposes it as a system SOCKS proxy on `127.0.0.1:1080`, and switches the macOS proxy settings between a whitelist-driven PAC file or a route-all mode. The status-bar icon dims when inactive and is fully opaque when active.
 
 ## Build & run
 1. Make sure Xcode command line tools are installed.
 2. From this folder run: `swift run ProxyTray`
    - The app stays attached to the terminal session; keep the window open while running.
-3. A new tray icon will appear. Use the menu to set the SSH password first, then enable the proxy.
+3. Make sure your SSH public key is authorized on the server and its private key is available through the standard `~/.ssh` identities, host-specific SSH config, or `ssh-agent`.
+4. A new tray icon will appear. Use the menu to configure the SSH server, then enable the proxy.
 
 ### Build a standalone app bundle
 If you want a double-clickable `.app` without manual steps:
@@ -17,13 +18,12 @@ If you want a double-clickable `.app` without manual steps:
 The script reads the version from `VERSION` by default and writes it into the app bundle metadata used by Finder and the tray tooltip. For a one-off build without editing the file, use `APP_VERSION=1.0 ./Scripts/build-app.sh`. An `.icns` from `Scripts/icon512.icns` is bundled and set as the Finder icon; replace that file if you want a different icon. The tray glyph itself is still drawn in code. If you want a stable launcher, symlink it: `ln -sfn "$(pwd)/.build/ProxyTray.app" /Applications/ProxyTray.app`.
 
 ## Menu actions
-- **Enable Proxy**: decrypts the stored SSH password, starts `ssh -N -D 1080 -p <port> <user>@<host>` using SSH_ASKPASS, then applies proxy settings.
+- **Enable Proxy**: starts `ssh -N -D 1080 -p <port> <user>@<host>` in non-interactive, public-key-only mode, then applies proxy settings.
 - **Disable Proxy**: stops the tunnel and turns off proxy settings.
 - **Restart Proxy**: stops the current tunnel, clears the proxy settings, and reconnects immediately.
 - **Route All Traffic**: toggles between “all traffic via proxy” (direct SOCKS config) and “whitelist only” (PAC file).
 - **Open Whitelist File**: opens `~/.proxy-tray/whitelist.txt` for editing.
 - **Update SSH Settings**: set SSH host, username, and port (stored in `~/.proxy-tray/ssh.json`).
-- **Update SSH Password**: securely re-encrypts and stores the password.
 - **Quit**: stops proxy/tunnel and exits.
 
 ## Whitelist format
@@ -33,16 +33,16 @@ Plain-text file at `~/.proxy-tray/whitelist.txt`, one entry per line. Lines star
 
 Wildcards (`*`) are **not** supported. All hosts **not** matching these CIDRs go DIRECT. When “Route All Traffic” is ON, the whitelist is ignored and everything goes through the proxy.
 
-## Password storage
-- Your password is encrypted with AES-GCM.
-- A random 256-bit key is generated once and stored in the macOS Keychain (service `ProxyTrayKey`).
-- The encrypted password is stored at `~/.proxy-tray/password.enc`.
+## SSH key authentication
+- SSH only attempts public-key authentication and never falls back to a password or interactive login prompt.
+- OpenSSH discovers keys in its standard locations and configuration, including `~/.ssh/id_*`, per-host `IdentityFile` settings, and `ssh-agent`.
+- A passphrase-protected private key must already be unlocked in `ssh-agent` before enabling the proxy.
 - SSH settings (host/username/port) are stored in `~/.proxy-tray/ssh.json`. Defaults: `user@example.com:22`.
+- Older releases may have created `~/.proxy-tray/password.enc` and a `ProxyTrayKey` Keychain item. The current app does not read either; they can be removed once rollback to a password-based release is no longer needed.
 
 ## Files the app manages
 - `~/.proxy-tray/whitelist.txt` (editable)
 - `~/.proxy-tray/proxy.pac` (generated from your whitelist)
-- `~/.proxy-tray/password.enc` (encrypted password)
 - `~/.proxy-tray/ssh.json` (editable via menu)
 
 ## Notes

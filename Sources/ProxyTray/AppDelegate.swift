@@ -46,7 +46,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(withTitle: "Open Whitelist File", action: #selector(openWhitelist), keyEquivalent: "")
         menu.addItem(withTitle: "Update SSH Settings", action: #selector(updateSshSettings), keyEquivalent: "")
-        menu.addItem(withTitle: "Update SSH Password", action: #selector(updatePassword), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Restart Proxy", action: #selector(restartProxy), keyEquivalent: "r")
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -67,7 +66,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openWhitelist() { controller.openWhitelist() }
     @objc private func updateSshSettings() { controller.promptForSshSettings() }
     @objc private func restartProxy() { controller.restartProxy() }
-    @objc private func updatePassword() { controller.promptForPassword() }
     @objc private func quit() { controller.cleanup(); NSApp.terminate(nil) }
 
     private func refreshUI(state: ProxyState) {
