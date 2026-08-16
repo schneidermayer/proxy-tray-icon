@@ -11,7 +11,7 @@
      COMMITS_SINCE_RELEASE="$(git rev-list --count "${RELEASE_TAG}..HEAD")"
      APP_VERSION="${CURRENT_VERSION}-${COMMITS_SINCE_RELEASE}" ./Scripts/build-app.sh
      ```
-  3. Terminate any running instance, relaunch the newly built installed app, and verify that it is running:
+  3. Before restarting, ensure the rebuilt bundle has been copied to `/Applications/ProxyTray.app` (`Scripts/build-app.sh` currently performs this installation). Start the app only from that installed path, never from `.build/ProxyTray.app`, then terminate any running instance, relaunch, and verify that it is running:
      ```sh
      pkill -x ProxyTray 2>/dev/null || true
      open -na /Applications/ProxyTray.app
