@@ -11,6 +11,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = ProxyController()
 
     static func main() {
+        if KeyPassphraseVault.answerAskPassIfRequested() {
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

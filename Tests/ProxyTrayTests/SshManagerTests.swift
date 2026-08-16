@@ -15,6 +15,25 @@ final class SshManagerTests: XCTestCase {
         XCTAssertEqual(arguments.suffix(1), ["proxy-user@proxy.example.com"])
         XCTAssertEqual(arguments.value(after: "-p"), "2222")
     }
+
+    func testSSHArgumentsUseOnlyImportedIdentityAndMacOSKeychain() {
+        let settings = SshSettings(
+            host: "proxy.example.com",
+            username: "proxy-user",
+            port: 2222,
+            identityFile: "/tmp/proxytray-test-identity"
+        )
+
+        let arguments = SshManager.arguments(for: settings)
+
+        XCTAssertTrue(arguments.containsOption("BatchMode=yes"))
+        XCTAssertTrue(arguments.containsOption("IdentitiesOnly=yes"))
+        XCTAssertTrue(arguments.containsOption("UseKeychain=yes"))
+        XCTAssertTrue(arguments.containsOption("AddKeysToAgent=yes"))
+        XCTAssertTrue(arguments.containsOption("PasswordAuthentication=no"))
+        XCTAssertTrue(arguments.containsOption("KbdInteractiveAuthentication=no"))
+        XCTAssertEqual(arguments.value(after: "-i"), "/tmp/proxytray-test-identity")
+    }
 }
 
 private extension Array where Element == String {

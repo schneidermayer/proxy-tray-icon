@@ -85,22 +85,32 @@ final class SshManager {
     }
 
     static func arguments(for settings: SshSettings) -> [String] {
-        [
+        var arguments = [
             "-N",
             "-D", "1080",
             "-p", "\(settings.port)",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=15",
             "-o", "BatchMode=yes",
             "-o", "PubkeyAuthentication=yes",
             "-o", "PreferredAuthentications=publickey",
             "-o", "PasswordAuthentication=no",
             "-o", "KbdInteractiveAuthentication=no",
+            "-o", "UseKeychain=yes",
+            "-o", "AddKeysToAgent=yes",
             "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "\(settings.username)@\(settings.host)"
+            "-o", "UserKnownHostsFile=/dev/null"
         ]
+        if let identityFile = settings.identityFile {
+            arguments += [
+                "-i", identityFile,
+                "-o", "IdentitiesOnly=yes"
+            ]
+        }
+        arguments.append("\(settings.username)@\(settings.host)")
+        return arguments
     }
 
     private func killListeners(on port: Int) {
