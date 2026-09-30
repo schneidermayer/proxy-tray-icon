@@ -10,6 +10,9 @@ final class ProxyController {
     private let keyPassphraseVault = KeyPassphraseVault()
     private let network = NetworkConfigurator()
     private let ssh = SshManager()
+    private lazy var existingTunnelMonitor = ExistingTunnelMonitor { [weak self] in
+        self?.ssh.isTunnelRunning() ?? false
+    }
 
     private(set) var state = ProxyState(proxyActive: false, routeAll: UserDefaults.standard.bool(forKey: "RouteAll")) {
         didSet { onStateChange?(state) }
@@ -18,8 +21,8 @@ final class ProxyController {
     var onStateChange: ((ProxyState) -> Void)?
 
     init() {
-        ssh.onUnexpectedExit = { [weak self] _ in
-            self?.handleUnexpectedTunnelExit()
+        ssh.onUnexpectedExit = { [weak self] message in
+            self?.handleUnexpectedTunnelExit(message: message)
         }
     }
 
@@ -30,18 +33,17 @@ final class ProxyController {
 
     func enableProxy() {
         guard !state.proxyActive else { return }
+        existingTunnelMonitor.stop()
         do {
             let sshSettings = try config.loadSshSettings()
             ssh.start(settings: sshSettings) { [weak self] result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success:
-                        self?.activateSystemProxy()
-                    case .failure(let error):
-                        self?.presentError(
-                            "Could not connect using SSH key authentication. Make sure the imported key and its Keychain passphrase are correct and that the public key is authorized on the server.\n\n\(error.localizedDescription)"
-                        )
-                    }
+                switch result {
+                case .success:
+                    self?.activateSystemProxy()
+                case .failure(let error):
+                    self?.presentError(
+                        "Could not connect using SSH key authentication. Make sure the imported key and its Keychain passphrase are correct and that the public key is authorized on the server.\n\n\(error.localizedDescription)"
+                    )
                 }
             }
         } catch {
@@ -173,6 +175,7 @@ final class ProxyController {
     }
 
     func cleanup() {
+        existingTunnelMonitor.stop()
         ssh.stop()
         network.disableProxy()
         state.proxyActive = false
@@ -202,10 +205,12 @@ final class ProxyController {
             state.routeAll = true
             UserDefaults.standard.set(true, forKey: "RouteAll")
             state.proxyActive = true
+            monitorExistingTunnel()
         case .pac where tunnelRunning:
             state.routeAll = false
             UserDefaults.standard.set(false, forKey: "RouteAll")
             state.proxyActive = true
+            monitorExistingTunnel()
         case .socks, .pac:
             network.disableProxy()
             state.proxyActive = false
@@ -214,10 +219,21 @@ final class ProxyController {
         }
     }
 
-    private func handleUnexpectedTunnelExit() {
+    private func monitorExistingTunnel() {
+        existingTunnelMonitor.start { [weak self] in
+            self?.handleUnexpectedTunnelExit(message:
+                "The previously running tunnel is no longer listening on port 1080.\n" +
+                "SSH error output is unavailable because this connection was started before this app instance."
+            )
+        }
+    }
+
+    private func handleUnexpectedTunnelExit(message: String) {
         guard state.proxyActive else { return }
-        network.disableProxy()
+        existingTunnelMonitor.stop()
+        let cleanupErrors = network.disableProxy()
         state.proxyActive = false
+        ConnectionLossAlert.present(message: message, cleanupErrors: cleanupErrors)
     }
 
     private func configurePrivateKey(

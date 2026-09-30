@@ -24,7 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         buildMenu()
         controller.onStateChange = { [weak self] state in
-            DispatchQueue.main.async { self?.refreshUI(state: state) }
+            self?.refreshUI(state: state)
         }
         controller.bootstrap()
         refreshUI(state: controller.state)

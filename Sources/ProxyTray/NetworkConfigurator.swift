@@ -2,6 +2,11 @@ import Foundation
 
 final class NetworkConfigurator {
     private let networksetup = "/usr/sbin/networksetup"
+    private let commandRunner: (([String]) throws -> String)?
+
+    init(commandRunner: (([String]) throws -> String)? = nil) {
+        self.commandRunner = commandRunner
+    }
 
     enum ProxyState {
         case none
@@ -27,12 +32,29 @@ final class NetworkConfigurator {
         }
     }
 
-    func disableProxy() {
-        guard let services = try? listServices() else { return }
-        for service in services {
-            _ = try? run(["-setautoproxystate", service, "off"])
-            _ = try? run(["-setsocksfirewallproxystate", service, "off"])
+    @discardableResult
+    func disableProxy() -> [String] {
+        var failures: [String] = []
+        let services: [String]
+        do {
+            services = try listServices { failures.append($0) }
+        } catch {
+            failures.append("Could not list network services: \(error.localizedDescription)")
+            return failures
         }
+        for service in services {
+            for (command, proxyName) in [
+                ("-setautoproxystate", "PAC"),
+                ("-setsocksfirewallproxystate", "SOCKS")
+            ] {
+                do {
+                    try run([command, service, "off"])
+                } catch {
+                    failures.append("Could not disable \(proxyName) proxy for \"\(service)\" (networksetup \(command)): \(error.localizedDescription)")
+                }
+            }
+        }
+        return failures
     }
 
     func detectProxyState() -> ProxyState {
@@ -61,7 +83,7 @@ final class NetworkConfigurator {
         return .none
     }
 
-    private func listServices() throws -> [String] {
+    private func listServices(onFailure: ((String) -> Void)? = nil) throws -> [String] {
         let output = try runAndCapture(["-listallnetworkservices"])
         let lines = output.split(separator: "\n").map(String.init)
         var services: [String] = []
@@ -70,8 +92,11 @@ final class NetworkConfigurator {
             if trimmed.isEmpty { continue }
             if trimmed.hasPrefix("*") { continue }
             if trimmed.lowercased().contains("asterisk") { continue }
-            if (try? runAndCapture(["-getinfo", trimmed])) != nil {
+            do {
+                _ = try runAndCapture(["-getinfo", trimmed])
                 services.append(trimmed)
+            } catch {
+                onFailure?("Could not inspect network service \"\(trimmed)\" (networksetup -getinfo): \(error.localizedDescription)")
             }
         }
         if services.isEmpty {
@@ -86,6 +111,9 @@ final class NetworkConfigurator {
     }
 
     private func runAndCapture(_ arguments: [String]) throws -> String {
+        if let commandRunner {
+            return try commandRunner(arguments)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: networksetup)
         process.arguments = arguments
