@@ -59,7 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleProxy() {
-        if controller.state.proxyActive {
+        if controller.state.proxyActive || controller.state.connecting {
             controller.disableProxy()
         } else {
             controller.enableProxy()
@@ -69,13 +69,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openWhitelist() { controller.openWhitelist() }
     @objc private func updateSshSettings() { controller.promptForSshSettings() }
     @objc private func restartProxy() { controller.restartProxy() }
-    @objc private func quit() { controller.cleanup(); NSApp.terminate(nil) }
+    @objc private func quit() { controller.disableProxy(); NSApp.terminate(nil) }
 
     private func refreshUI(state: ProxyState) {
         statusItem.button?.image = IconFactory.icon(active: state.proxyActive)
         statusItem.button?.toolTip = statusItemTooltip
-        statusMenuItem.title = makeStatusMenuTitle(active: state.proxyActive)
-        toggleMenuItem.title = state.proxyActive ? "Disable Proxy" : "Enable Proxy"
+        statusMenuItem.title = makeStatusMenuTitle(active: state.proxyActive, connecting: state.connecting)
+        toggleMenuItem.title = state.connecting ? "Cancel Connection" : (state.proxyActive ? "Disable Proxy" : "Enable Proxy")
         toggleMenuItem.isEnabled = true
         if let routeAllItem = menu.items.first(where: { $0.action == #selector(toggleRouteAll) }) {
             routeAllItem.state = state.routeAll ? .on : .off
@@ -91,8 +91,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return "ProxyTray \(version)"
     }
 
-    private func makeStatusMenuTitle(active: Bool) -> String {
-        let status = active ? "Active" : "Inactive"
+    private func makeStatusMenuTitle(active: Bool, connecting: Bool = false) -> String {
+        let status = connecting ? "Connecting" : (active ? "Active" : "Inactive")
         guard let version = appVersion else { return "Status: \(status)" }
         return "\(version) – Status: \(status)"
     }

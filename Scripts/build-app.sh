@@ -55,7 +55,7 @@ else
   echo "No icon at $ICON_SRC; bundle will use default icon."
 fi
 
-echo "Done. Launch $APP to run."
+echo "App bundle assembled."
 
 echo "Copying to $TARGET..."
 rm -rf "$TARGET"

@@ -3,24 +3,40 @@ import Cocoa
 struct ProxyState {
     var proxyActive: Bool
     var routeAll: Bool
+    var connecting = false
 }
 
 final class ProxyController {
-    private let config = ConfigManager()
+    private let config: ConfigManager
     private let keyPassphraseVault = KeyPassphraseVault()
-    private let network = NetworkConfigurator()
-    private let ssh = SshManager()
+    private let network: NetworkConfigurator
+    private let ssh: SshManager
+    private let errorPresenter: (String) -> Void
+    private let connectionLossReporter: (String, [String]) -> Void
     private lazy var existingTunnelMonitor = ExistingTunnelMonitor { [weak self] in
         self?.ssh.isTunnelRunning() ?? false
     }
 
-    private(set) var state = ProxyState(proxyActive: false, routeAll: UserDefaults.standard.bool(forKey: "RouteAll")) {
+    private(set) var state: ProxyState {
         didSet { onStateChange?(state) }
     }
 
     var onStateChange: ((ProxyState) -> Void)?
 
-    init() {
+    init(
+        config: ConfigManager = ConfigManager(),
+        network: NetworkConfigurator = NetworkConfigurator(),
+        ssh: SshManager = SshManager(),
+        routeAll: Bool = UserDefaults.standard.bool(forKey: "RouteAll"),
+        errorPresenter: ((String) -> Void)? = nil,
+        connectionLossReporter: ((String, [String]) -> Void)? = nil
+    ) {
+        self.config = config
+        self.network = network
+        self.ssh = ssh
+        self.errorPresenter = errorPresenter ?? Self.showError
+        self.connectionLossReporter = connectionLossReporter ?? ConnectionLossAlert.present
+        self.state = ProxyState(proxyActive: false, routeAll: routeAll)
         ssh.onUnexpectedExit = { [weak self] message in
             self?.handleUnexpectedTunnelExit(message: message)
         }
@@ -32,18 +48,19 @@ final class ProxyController {
     }
 
     func enableProxy() {
-        guard !state.proxyActive else { return }
+        guard !state.proxyActive, !state.connecting else { return }
         existingTunnelMonitor.stop()
         do {
             let sshSettings = try config.loadSshSettings()
+            state.connecting = true
             ssh.start(settings: sshSettings) { [weak self] result in
+                guard let self else { return }
+                self.state.connecting = false
                 switch result {
                 case .success:
-                    self?.activateSystemProxy()
+                    self.activateSystemProxy()
                 case .failure(let error):
-                    self?.presentError(
-                        "Could not connect using SSH key authentication. Make sure the imported key and its Keychain passphrase are correct and that the public key is authorized on the server.\n\n\(error.localizedDescription)"
-                    )
+                    self.presentError(Self.connectionErrorMessage(error))
                 }
             }
         } catch {
@@ -52,12 +69,19 @@ final class ProxyController {
     }
 
     func disableProxy() {
-        cleanup()
+        let failures = cleanup()
+        if !failures.isEmpty {
+            presentError("Could not restore all previous proxy settings:\n\n" + failures.joined(separator: "\n"))
+        }
     }
 
     func restartProxy() {
         guard state.proxyActive else { return }
-        cleanup()
+        let failures = cleanup()
+        guard failures.isEmpty else {
+            presentError("Could not restore the previous proxy settings before restarting:\n\n" + failures.joined(separator: "\n"))
+            return
+        }
         enableProxy()
     }
 
@@ -155,17 +179,12 @@ final class ProxyController {
                     username: trimmedUser,
                     port: portValue
                 )
-                let identityFile = try configurePrivateKey(
-                    selectedPath: keyField.stringValue,
-                    currentSettings: current
-                )
                 let newSettings = SshSettings(
                     host: trimmedHost,
                     username: trimmedUser,
-                    port: portValue,
-                    identityFile: identityFile
+                    port: portValue
                 )
-                try config.saveSshSettings(newSettings)
+                try saveSshSettings(newSettings, selectedKeyPath: keyField.stringValue, currentSettings: current)
             } catch SettingsFlowError.cancelled {
                 return
             } catch {
@@ -174,11 +193,14 @@ final class ProxyController {
         }
     }
 
-    func cleanup() {
+    @discardableResult
+    func cleanup() -> [String] {
         existingTunnelMonitor.stop()
         ssh.stop()
-        network.disableProxy()
+        let failures = network.disableProxy()
+        state.connecting = false
         state.proxyActive = false
+        return failures
     }
 
     private func activateSystemProxy() {
@@ -192,8 +214,12 @@ final class ProxyController {
             }
             state.proxyActive = true
         } catch {
-            presentError("Failed to update system proxy: \(error.localizedDescription)")
-            cleanup()
+            let failures = cleanup()
+            var message = "Failed to update system proxy: \(error.localizedDescription)"
+            if !failures.isEmpty {
+                message += "\n\nCould not restore the previous settings:\n" + failures.joined(separator: "\n")
+            }
+            presentError(message)
         }
     }
 
@@ -211,18 +237,20 @@ final class ProxyController {
             UserDefaults.standard.set(false, forKey: "RouteAll")
             state.proxyActive = true
             monitorExistingTunnel()
-        case .socks, .pac:
-            network.disableProxy()
-            state.proxyActive = false
         default:
-            break
+            // No journal means this is a no-op. Pending or interrupted owned
+            // changes are recovered even if they do not form an active proxy.
+            let failures = cleanup()
+            if !failures.isEmpty {
+                presentError("Could not restore proxy settings from the previous session:\n\n" + failures.joined(separator: "\n"))
+            }
         }
     }
 
     private func monitorExistingTunnel() {
         existingTunnelMonitor.start { [weak self] in
             self?.handleUnexpectedTunnelExit(message:
-                "The previously running tunnel is no longer listening on port 1080.\n" +
+                "The previously running ProxyTray tunnel is no longer available.\n" +
                 "SSH error output is unavailable because this connection was started before this app instance."
             )
         }
@@ -233,63 +261,47 @@ final class ProxyController {
         existingTunnelMonitor.stop()
         let cleanupErrors = network.disableProxy()
         state.proxyActive = false
-        ConnectionLossAlert.present(message: message, cleanupErrors: cleanupErrors)
+        connectionLossReporter(message, cleanupErrors)
     }
 
-    private func configurePrivateKey(
-        selectedPath: String,
-        currentSettings: SshSettings
-    ) throws -> String? {
-        let trimmedPath = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else {
-            if let currentIdentity = currentSettings.identityFile,
-               currentIdentity != config.importedPrivateKeyPath {
-                keyPassphraseVault.removeFromOpenSSHKeychain(
-                    identityPath: currentIdentity
+    private func saveSshSettings(_ settings: SshSettings, selectedKeyPath: String, currentSettings: SshSettings) throws {
+        let trimmedPath = selectedKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        var passphrase: String?
+        if !trimmedPath.isEmpty {
+            let selectedURL = URL(fileURLWithPath: NSString(string: trimmedPath).expandingTildeInPath).standardizedFileURL
+            let currentURL = currentSettings.identityFile.map { URL(fileURLWithPath: $0).standardizedFileURL }
+            if selectedURL != currentURL,
+               try config.privateKeyRequiresPassphrase(at: selectedURL) {
+                guard let enteredPassphrase = promptForPrivateKeyPassphrase() else {
+                    throw SettingsFlowError.cancelled
+                }
+                passphrase = enteredPassphrase
+            }
+        }
+        let transaction = SshSettingsTransaction(
+            config: config,
+            prepareKey: { [keyPassphraseVault] path, passphrase in
+                try keyPassphraseVault.preparePrivateKey(
+                    identityPath: path,
+                    passphrase: passphrase,
+                    askPassExecutablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
                 )
+            },
+            discardKey: { [keyPassphraseVault] path in
+                keyPassphraseVault.removeFromOpenSSHKeychain(identityPath: path)
             }
-            keyPassphraseVault.removeFromOpenSSHKeychain(
-                identityPath: config.importedPrivateKeyPath
-            )
-            try config.removeImportedPrivateKey()
-            return nil
-        }
-
-        let expandedPath = NSString(string: trimmedPath).expandingTildeInPath
-        let selectedURL = URL(fileURLWithPath: expandedPath).standardizedFileURL
-        let managedURL = URL(fileURLWithPath: config.importedPrivateKeyPath)
-            .standardizedFileURL
-        let isAlreadyImported = selectedURL.path == managedURL.path
-        let requiresPassphrase = try config.privateKeyRequiresPassphrase(at: selectedURL)
-
-        if isAlreadyImported {
-            return managedURL.path
-        }
-
-        let passphrase: String?
-        if requiresPassphrase {
-            guard let enteredPassphrase = promptForPrivateKeyPassphrase() else {
-                throw SettingsFlowError.cancelled
-            }
-            passphrase = enteredPassphrase
-        } else {
-            passphrase = nil
-        }
-
-        keyPassphraseVault.removeFromOpenSSHKeychain(
-            identityPath: managedURL.path
         )
-        let importedPath = try config.importPrivateKey(from: selectedURL)
-        if let passphrase {
-            let executablePath = Bundle.main.executableURL?.path
-                ?? CommandLine.arguments[0]
-            try keyPassphraseVault.storeInOpenSSHKeychain(
-                passphrase: passphrase,
-                identityPath: importedPath,
-                askPassExecutablePath: executablePath
-            )
+        try transaction.save(settings: settings, selectedKeyPath: trimmedPath, passphrase: passphrase)
+    }
+
+    private static func connectionErrorMessage(_ error: Error) -> String {
+        let detail = error.localizedDescription
+        var message = "Could not establish the SSH tunnel.\n\n\(detail)"
+        let lowercased = detail.lowercased()
+        if lowercased.contains("host key verification failed") || lowercased.contains("remote host identification has changed") {
+            message += "\n\nVerify the server's host-key fingerprint with its administrator, then connect using SSH in Terminal to establish trust. ProxyTray requires a matching key in your normal SSH known-hosts files."
         }
-        return importedPath
+        return message
     }
 
     private func promptForPrivateKeyPassphrase() -> String? {
@@ -314,6 +326,10 @@ final class ProxyController {
     }
 
     private func presentError(_ message: String) {
+        errorPresenter(message)
+    }
+
+    private static func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Proxy agent"
         alert.informativeText = message

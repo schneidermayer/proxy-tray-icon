@@ -27,6 +27,27 @@ final class KeyPassphraseVault {
         try removeSecret(service: askPassService, account: token)
     }
 
+    func preparePrivateKey(
+        identityPath: String,
+        passphrase: String?,
+        askPassExecutablePath: String
+    ) throws {
+        let requiresPassphrase = try ConfigManager().privateKeyRequiresPassphrase(
+            at: URL(fileURLWithPath: identityPath)
+        )
+        guard requiresPassphrase else { return }
+        guard let passphrase, !passphrase.isEmpty else {
+            throw NSError(domain: "ProxyTray", code: 0, userInfo: [NSLocalizedDescriptionKey: "The selected SSH private key requires a passphrase"])
+        }
+        // ssh-add must successfully decrypt this uniquely staged identity before
+        // its path can replace the current identity in ssh.json.
+        try storeInOpenSSHKeychain(
+            passphrase: passphrase,
+            identityPath: identityPath,
+            askPassExecutablePath: askPassExecutablePath
+        )
+    }
+
     func storeInOpenSSHKeychain(
         passphrase: String,
         identityPath: String,
@@ -49,10 +70,10 @@ final class KeyPassphraseVault {
         process.standardOutput = output
         process.standardError = output
         try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            let data = output.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let description = message.flatMap { $0.isEmpty ? nil : $0 }
@@ -70,8 +91,8 @@ final class KeyPassphraseVault {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
         process.arguments = ["--apple-use-keychain", "-d", identityPath]
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             process.waitUntilExit()

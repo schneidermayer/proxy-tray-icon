@@ -7,7 +7,7 @@ enum ConnectionLossAlert {
     static func present(message: String, cleanupErrors: [String]) {
         var details = message
         if !cleanupErrors.isEmpty {
-            details += "\n\nSystem proxy cleanup failed:\n" + cleanupErrors.joined(separator: "\n")
+            details += "\n\nRestoring previous proxy settings failed:\n" + cleanupErrors.joined(separator: "\n")
         }
 
         logger.error("SSH connection lost")
@@ -27,8 +27,8 @@ enum ConnectionLossAlert {
         let alert = NSAlert()
         alert.messageText = "SSH connection lost"
         alert.informativeText = cleanupFailed
-            ? "The tunnel closed unexpectedly. Some system proxy settings could not be disabled; check the details below and your network proxy settings."
-            : "The tunnel closed unexpectedly and the system proxy has been disabled. Choose Enable Proxy from the menu to reconnect."
+            ? "The tunnel closed unexpectedly. Some previous proxy settings could not be restored; check the details below and your network proxy settings."
+            : "The tunnel closed unexpectedly and ProxyTray's network changes have been reverted. Choose Enable Proxy from the menu to reconnect."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Copy Details")

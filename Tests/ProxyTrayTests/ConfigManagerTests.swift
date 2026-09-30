@@ -42,20 +42,15 @@ final class ConfigManagerTests: XCTestCase {
         let manager = ConfigManager(
             baseDir: temporaryDirectory.appendingPathComponent("config", isDirectory: true)
         )
-        let sourceURL = temporaryDirectory.appendingPathComponent("source-key")
-        let key = """
-        -----BEGIN OPENSSH PRIVATE KEY-----
-        test-fixture
-        -----END OPENSSH PRIVATE KEY-----
-        """
-        try Data(key.utf8).write(to: sourceURL)
+        let sourceURL = try makePrivateKeyFixture(in: temporaryDirectory)
+        let key = try Data(contentsOf: sourceURL)
 
         let importedPath = try manager.importPrivateKey(from: sourceURL)
 
         XCTAssertEqual(importedPath, manager.importedPrivateKeyPath)
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: importedPath)),
-            Data(key.utf8)
+            key
         )
         let keyAttributes = try FileManager.default.attributesOfItem(atPath: importedPath)
         XCTAssertEqual((keyAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
@@ -69,19 +64,16 @@ final class ConfigManagerTests: XCTestCase {
         let manager = ConfigManager(
             baseDir: temporaryDirectory.appendingPathComponent("config", isDirectory: true)
         )
-        let firstSourceURL = temporaryDirectory.appendingPathComponent("first-key")
-        let secondSourceURL = temporaryDirectory.appendingPathComponent("second-key")
-        let firstKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfirst\n"
-        let secondKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecond\n"
-        try Data(firstKey.utf8).write(to: firstSourceURL)
-        try Data(secondKey.utf8).write(to: secondSourceURL)
+        let firstSourceURL = try makePrivateKeyFixture(in: temporaryDirectory)
+        let secondSourceURL = try makePrivateKeyFixture(in: temporaryDirectory)
+        let secondKey = try Data(contentsOf: secondSourceURL)
         _ = try manager.importPrivateKey(from: firstSourceURL)
 
         let importedPath = try manager.importPrivateKey(from: secondSourceURL)
 
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: importedPath)),
-            Data(secondKey.utf8)
+            secondKey
         )
         let attributes = try FileManager.default.attributesOfItem(atPath: importedPath)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
@@ -96,5 +88,50 @@ final class ConfigManagerTests: XCTestCase {
             .write(to: sourceURL)
 
         XCTAssertThrowsError(try manager.importPrivateKey(from: sourceURL))
+    }
+
+    func testUnencryptedKeyWithPermissiveSourcePermissionsDoesNotRequirePassphrase() throws {
+        let manager = ConfigManager(baseDir: temporaryDirectory.appendingPathComponent("config"))
+        let keyURL = try makePrivateKeyFixture(in: temporaryDirectory)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: keyURL.path)
+
+        XCTAssertFalse(try manager.privateKeyRequiresPassphrase(at: keyURL))
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: keyURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o644)
+    }
+
+    func testEncryptedRealKeyRequiresPassphrase() throws {
+        let manager = ConfigManager(baseDir: temporaryDirectory.appendingPathComponent("config"))
+        let keyURL = try makePrivateKeyFixture(in: temporaryDirectory, encrypted: true)
+
+        XCTAssertTrue(try manager.privateKeyRequiresPassphrase(at: keyURL))
+    }
+
+    func testMalformedKeyReportsFormatErrorInsteadOfRequiringPassphrase() throws {
+        let manager = ConfigManager(baseDir: temporaryDirectory.appendingPathComponent("config"))
+        let keyURL = temporaryDirectory.appendingPathComponent("corrupt-key")
+        try Data("-----BEGIN OPENSSH PRIVATE KEY-----\ncorrupt\n-----END OPENSSH PRIVATE KEY-----\n".utf8)
+            .write(to: keyURL)
+
+        XCTAssertThrowsError(try manager.privateKeyRequiresPassphrase(at: keyURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("invalid format"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains(keyURL.path))
+        }
+    }
+
+    func testStagedKeyHasUniqueManagedPathAndRestrictedPermissions() throws {
+        let manager = ConfigManager(baseDir: temporaryDirectory.appendingPathComponent("config"))
+        let keyURL = try makePrivateKeyFixture(in: temporaryDirectory)
+        let firstPath = try manager.stagePrivateKey(from: keyURL)
+        let secondPath = try manager.stagePrivateKey(from: keyURL)
+
+        XCTAssertNotEqual(firstPath, secondPath)
+        XCTAssertNotEqual(firstPath, manager.importedPrivateKeyPath)
+        XCTAssertTrue(manager.isManagedPrivateKey(at: firstPath))
+        XCTAssertTrue(manager.isManagedPrivateKey(at: manager.importedPrivateKeyPath))
+        XCTAssertFalse(manager.isManagedPrivateKey(at: keyURL.path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: firstPath)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 }

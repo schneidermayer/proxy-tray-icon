@@ -8,6 +8,7 @@ final class SshManager {
         let stderr: DiagnosticPipe
         var startupFinished = false
         var expectedTermination = false
+        var startupFailure: String?
 
         init(process: Process, stdout: DiagnosticPipe, stderr: DiagnosticPipe) {
             self.process = process
@@ -17,26 +18,42 @@ final class SshManager {
     }
 
     private let stateQueue = DispatchQueue(label: "ProxyTray.SshManager.state")
+    private let readinessQueue = DispatchQueue(label: "ProxyTray.SshManager.readiness", qos: .utility)
     private let processFactory: (SshSettings) -> Process
-    private let listenerCleanup: ((Int) -> Void)?
-    private let startupDelay: TimeInterval
+    private let readinessProbe: (Process) -> Bool
+    private let inheritedTunnelProbe: () -> Bool
+    private let stopInheritedTunnel: () -> Void
+    private let control: SshTunnelControl
+    private let startupTimeout: TimeInterval
+    private let pollInterval: TimeInterval
     private var session: Session?
 
     var onUnexpectedExit: ((String) -> Void)?
 
     init(
+        controlDirectory: URL = SshTunnelControl.defaultDirectory,
         processFactory: ((SshSettings) -> Process)? = nil,
-        listenerCleanup: ((Int) -> Void)? = nil,
-        startupDelay: TimeInterval = 1
+        readinessProbe: ((Process) -> Bool)? = nil,
+        inheritedTunnelProbe: (() -> Bool)? = nil,
+        stopInheritedTunnel: (() -> Void)? = nil,
+        startupTimeout: TimeInterval = 20,
+        pollInterval: TimeInterval = 0.1
     ) {
+        let control = SshTunnelControl(directory: controlDirectory)
+        self.control = control
         self.processFactory = processFactory ?? { settings in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = Self.arguments(for: settings)
+            process.arguments = Self.arguments(for: settings, controlPath: control.socketPath)
             return process
         }
-        self.listenerCleanup = listenerCleanup
-        self.startupDelay = startupDelay
+        self.readinessProbe = readinessProbe ?? { process in
+            control.isReady(expectedPID: process.processIdentifier)
+        }
+        self.inheritedTunnelProbe = inheritedTunnelProbe ?? { control.isReady() }
+        self.stopInheritedTunnel = stopInheritedTunnel ?? { control.stop() }
+        self.startupTimeout = startupTimeout
+        self.pollInterval = pollInterval
     }
 
     func start(settings: SshSettings, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -59,15 +76,16 @@ final class SshManager {
                 // Keep the session until delivery so stop/restart can invalidate
                 // an exit notification that is already queued on the main thread.
                 DispatchQueue.main.async {
-                    let startupPending: Bool? = self.stateQueue.sync {
+                    let outcome: (startupPending: Bool, failure: String?)? = self.stateQueue.sync {
                         guard self.session === session, !session.expectedTermination else {
                             return nil
                         }
                         self.session = nil
-                        return !session.startupFinished
+                        return (!session.startupFinished, session.startupFailure)
                     }
-                    guard let startupPending else { return }
-                    if startupPending {
+                    guard let outcome else { return }
+                    let message = outcome.failure.map { "\($0)\n\n\(message)" } ?? message
+                    if outcome.startupPending {
                         completion(.failure(NSError(
                             domain: "ProxyTray",
                             code: Int(proc.terminationStatus),
@@ -82,8 +100,10 @@ final class SshManager {
             do {
                 // Register before launch: a short-lived process can terminate
                 // before run() returns and must still belong to this session.
+                stateQueue.sync { self.session = session }
+                try control.prepareDirectory()
                 try stateQueue.sync {
-                    self.session = session
+                    guard self.session === session, !session.expectedTermination else { return }
                     try process.run()
                 }
             } catch {
@@ -102,18 +122,11 @@ final class SshManager {
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + startupDelay) { [weak self] in
-                guard let self else { return }
-                let shouldComplete = self.stateQueue.sync {
-                    guard self.session === session,
-                          !session.expectedTermination,
-                          !session.startupFinished,
-                          process.isRunning else { return false }
-                    session.startupFinished = true
-                    return true
-                }
-                if shouldComplete { completion(.success(())) }
-            }
+            awaitReadiness(
+                for: session,
+                deadline: Date().addingTimeInterval(startupTimeout),
+                completion: completion
+            )
         } catch {
             DispatchQueue.main.async { completion(.failure(error)) }
         }
@@ -126,21 +139,64 @@ final class SshManager {
             self.session = nil
             return session
         }
-        if let process = session?.process, process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-        }
-        if let listenerCleanup {
-            listenerCleanup(1080)
+        if let process = session?.process {
+            SshTunnelControl.terminateOwnedProcess(process)
         } else {
-            killListeners(on: 1080)
+            stopInheritedTunnel()
         }
     }
 
-    static func arguments(for settings: SshSettings) -> [String] {
+    func isTunnelRunning() -> Bool {
+        inheritedTunnelProbe()
+    }
+
+    private func awaitReadiness(
+        for session: Session,
+        deadline: Date,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        readinessQueue.asyncAfter(deadline: .now() + pollInterval) { [weak self] in
+            guard let self else { return }
+            let isCurrent = self.stateQueue.sync {
+                self.session === session && !session.expectedTermination && !session.startupFinished
+            }
+            guard isCurrent, session.process.isRunning else { return }
+            if self.readinessProbe(session.process) {
+                DispatchQueue.main.async {
+                    let shouldComplete = self.stateQueue.sync {
+                        guard self.session === session,
+                              !session.expectedTermination,
+                              !session.startupFinished,
+                              session.process.isRunning else { return false }
+                        session.startupFinished = true
+                        return true
+                    }
+                    if shouldComplete { completion(.success(())) }
+                }
+            } else if Date() >= deadline {
+                let shouldTerminate = self.stateQueue.sync {
+                    guard self.session === session, !session.expectedTermination else { return false }
+                    session.startupFailure = "Timed out waiting for the authenticated SSH connection to open its SOCKS listener on 127.0.0.1:1080."
+                    return true
+                }
+                if shouldTerminate { SshTunnelControl.terminateOwnedProcess(session.process) }
+            } else {
+                self.awaitReadiness(for: session, deadline: deadline, completion: completion)
+            }
+        }
+    }
+
+    static func arguments(
+        for settings: SshSettings,
+        controlPath: String = SshTunnelControl.defaultDirectory.appendingPathComponent("ssh.sock").path
+    ) -> [String] {
         var arguments = [
             "-N",
-            "-D", "1080",
+            "-D", "127.0.0.1:1080",
+            "-S", controlPath,
+            "-o", "ControlMaster=yes",
+            "-o", "ControlPersist=no",
+            "-o", "ForkAfterAuthentication=no",
             "-p", "\(settings.port)",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=30",
@@ -153,8 +209,7 @@ final class SshManager {
             "-o", "KbdInteractiveAuthentication=no",
             "-o", "UseKeychain=yes",
             "-o", "AddKeysToAgent=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null"
+            "-o", "StrictHostKeyChecking=yes"
         ]
         if let identityFile = settings.identityFile {
             arguments += [
@@ -162,40 +217,8 @@ final class SshManager {
                 "-o", "IdentitiesOnly=yes"
             ]
         }
-        arguments.append("\(settings.username)@\(settings.host)")
+        arguments += ["--", "\(settings.username)@\(settings.host)"]
         return arguments
-    }
-
-    private func killListeners(on port: Int) {
-        guard let pids = try? listPIDsListening(on: port) else { return }
-        for pid in pids {
-            let kill = Process()
-            kill.executableURL = URL(fileURLWithPath: "/bin/kill")
-            kill.arguments = ["-9", "\(pid)"]
-            try? kill.run()
-            kill.waitUntilExit()
-        }
-    }
-
-    func isTunnelRunning(on port: Int = 1080) -> Bool {
-        guard let pids = try? listPIDsListening(on: port) else { return false }
-        return !pids.isEmpty
-    }
-
-    private func listPIDsListening(on port: Int) throws -> [Int32] {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        proc.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
-        return output
-            .split(separator: "\n")
-            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
 
     private static func terminationMessage(for process: Process, stdout: String, stderr: String) -> String {
@@ -213,7 +236,7 @@ final class SshManager {
 /// Drains output as it arrives so SSH cannot block on a full pipe. Only the
 /// final 16 KiB per stream is retained; finishing never waits for inherited
 /// write handles that a subprocess may have left open.
-private final class DiagnosticPipe {
+final class DiagnosticPipe {
     let pipe: Pipe
     private let queue: DispatchQueue
     private let source: DispatchSourceRead

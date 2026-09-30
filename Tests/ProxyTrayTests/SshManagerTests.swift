@@ -1,7 +1,22 @@
+import Darwin
 import XCTest
 @testable import ProxyTray
 
 final class SshManagerTests: XCTestCase {
+    private var temporaryDirectory: URL!
+    private var controlDirectory: URL { temporaryDirectory.appendingPathComponent("run") }
+
+    override func setUpWithError() throws {
+        temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pt-" + UUID().uuidString.prefix(8), isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        if FileManager.default.fileExists(atPath: temporaryDirectory.path) {
+            try FileManager.default.removeItem(at: temporaryDirectory)
+        }
+    }
+
     func testSSHArgumentsRequireNonInteractivePublicKeyAuthentication() {
         let settings = SshSettings(host: "proxy.example.com", username: "proxy-user", port: 2222)
 
@@ -179,12 +194,15 @@ final class SshManagerTests: XCTestCase {
         let secondProcess = shellProcess(script: "exec /bin/sleep 30")
         var invocation = 0
         let manager = SshManager(
+            controlDirectory: controlDirectory,
             processFactory: { _ in
                 invocation += 1
                 return invocation == 1 ? firstProcess : secondProcess
             },
-            listenerCleanup: { _ in },
-            startupDelay: 0.05
+            readinessProbe: { _ in true },
+            inheritedTunnelProbe: { false },
+            stopInheritedTunnel: {},
+            pollInterval: 0.05
         )
         defer { manager.stop() }
         let started = expectation(description: "Replacement startup success")
@@ -208,7 +226,13 @@ final class SshManagerTests: XCTestCase {
     func testLaunchFailureIsDeliveredOnMainThread() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/nonexistent-proxytray-test-executable")
-        let manager = SshManager(processFactory: { _ in process }, listenerCleanup: { _ in })
+        let manager = SshManager(
+            controlDirectory: controlDirectory,
+            processFactory: { _ in process },
+            readinessProbe: { _ in false },
+            inheritedTunnelProbe: { false },
+            stopInheritedTunnel: {}
+        )
         defer { manager.stop() }
         let failed = expectation(description: "Launch failure")
         manager.onUnexpectedExit = { _ in XCTFail("Launch failure must only call completion") }
@@ -222,12 +246,151 @@ final class SshManagerTests: XCTestCase {
         wait(for: [failed], timeout: 5)
     }
 
+    func testArgumentsRequireVerifiedHostAndPrivateManagedMaster() {
+        let arguments = SshManager.arguments(for: .defaultSettings, controlPath: "/private-test/ssh.sock")
+
+        XCTAssertTrue(arguments.containsOption("StrictHostKeyChecking=yes"))
+        XCTAssertFalse(arguments.containsOption("StrictHostKeyChecking=no"))
+        XCTAssertFalse(arguments.contains { $0.hasPrefix("UserKnownHostsFile=") })
+        XCTAssertTrue(arguments.containsOption("ControlMaster=yes"))
+        XCTAssertTrue(arguments.containsOption("ForkAfterAuthentication=no"))
+        XCTAssertTrue(arguments.containsOption("ControlPersist=no"))
+        XCTAssertEqual(arguments.value(after: "-S"), "/private-test/ssh.sock")
+        XCTAssertEqual(arguments.value(after: "-D"), "127.0.0.1:1080")
+    }
+
+    func testStartupWaitsForReadinessProbeAndRunsItOffMain() {
+        let process = shellProcess(script: "exec /bin/sleep 30")
+        let gate = NSLock()
+        var ready = false
+        let notStarted = expectation(description: "Process survival alone is insufficient")
+        notStarted.isInverted = true
+        let started = expectation(description: "Ready listener activates startup")
+        let manager = SshManager(
+            controlDirectory: controlDirectory,
+            processFactory: { _ in process },
+            readinessProbe: { _ in
+                XCTAssertFalse(Thread.isMainThread)
+                gate.lock()
+                defer { gate.unlock() }
+                return ready
+            },
+            inheritedTunnelProbe: { false },
+            stopInheritedTunnel: {},
+            startupTimeout: 5,
+            pollInterval: 0.01
+        )
+        defer { manager.stop() }
+        manager.start(settings: .defaultSettings) { result in
+            gate.lock()
+            let wasReady = ready
+            gate.unlock()
+            if !wasReady { notStarted.fulfill() }
+            guard case .success = result else { return XCTFail("Expected readiness success") }
+            XCTAssertTrue(Thread.isMainThread)
+            started.fulfill()
+        }
+        wait(for: [notStarted], timeout: 1.1)
+
+        gate.lock()
+        ready = true
+        gate.unlock()
+
+        wait(for: [started], timeout: 5)
+    }
+
+    func testReadinessTimeoutStopsOwnedProcessAndReportsDiagnostic() {
+        let process = shellProcess(script: "printf 'authentication still pending' >&2; exec /bin/sleep 30")
+        let failed = expectation(description: "Readiness timeout")
+        let manager = SshManager(
+            controlDirectory: controlDirectory,
+            processFactory: { _ in process },
+            readinessProbe: { _ in false },
+            inheritedTunnelProbe: { false },
+            stopInheritedTunnel: {},
+            startupTimeout: 0.1,
+            pollInterval: 0.01
+        )
+        defer { manager.stop() }
+        manager.onUnexpectedExit = { _ in XCTFail("Readiness timeout is a startup failure") }
+        manager.start(settings: .defaultSettings) { result in
+            XCTAssertTrue(Thread.isMainThread)
+            guard case .failure(let error) = result else { return XCTFail("Expected timeout") }
+            XCTAssertTrue(error.localizedDescription.contains("Timed out waiting"))
+            XCTAssertTrue(error.localizedDescription.contains("authentication still pending"))
+            XCTAssertFalse(process.isRunning)
+            failed.fulfill()
+        }
+
+        wait(for: [failed], timeout: 5)
+    }
+
+    func testInheritedTunnelChecksAndStopUseManagedControl() {
+        var managedTunnelRunning = true
+        var stopRequests = 0
+        let manager = SshManager(
+            controlDirectory: controlDirectory,
+            inheritedTunnelProbe: { managedTunnelRunning },
+            stopInheritedTunnel: {
+                stopRequests += 1
+                managedTunnelRunning = false
+            }
+        )
+
+        XCTAssertTrue(manager.isTunnelRunning())
+        manager.stop()
+        XCTAssertEqual(stopRequests, 1)
+        XCTAssertFalse(manager.isTunnelRunning())
+    }
+
+    func testStopLeavesUnrelatedTCPListenerRunning() throws {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return XCTFail("Could not create local test listener") }
+        defer { Darwin.close(descriptor) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(Darwin.listen(descriptor, 1), 0)
+        var addressSize = socklen_t(MemoryLayout<sockaddr_in>.size)
+        XCTAssertEqual(withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(descriptor, $0, &addressSize)
+            }
+        }, 0)
+        let manager = SshManager(controlDirectory: controlDirectory)
+        XCTAssertFalse(manager.isTunnelRunning())
+
+        manager.stop()
+
+        let client = socket(AF_INET, SOCK_STREAM, 0)
+        defer { if client >= 0 { Darwin.close(client) } }
+        XCTAssertGreaterThanOrEqual(client, 0)
+        XCTAssertEqual(withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(client, $0, addressSize)
+            }
+        }, 0, "Stopping ProxyTray must leave an unrelated local listener accepting connections")
+    }
+
     private func makeManager(script: String, startupDelay: TimeInterval = 1) -> (SshManager, Process) {
         let process = shellProcess(script: script)
+        let readyAt = Date().addingTimeInterval(startupDelay)
         let manager = SshManager(
+            controlDirectory: controlDirectory,
             processFactory: { _ in process },
-            listenerCleanup: { _ in },
-            startupDelay: startupDelay
+            readinessProbe: { _ in Date() >= readyAt },
+            inheritedTunnelProbe: { false },
+            stopInheritedTunnel: {},
+            startupTimeout: startupDelay + 5,
+            pollInterval: 0.01
         )
         return (manager, process)
     }

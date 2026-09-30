@@ -154,7 +154,7 @@ final class ConfigManager {
             attributes: nil
         )
         let data = try JSONEncoder().encode(sanitized)
-        try data.write(to: URL(fileURLWithPath: sshSettingsPath))
+        try data.write(to: URL(fileURLWithPath: sshSettingsPath), options: .atomic)
     }
 
     func validateSshEndpoint(host: String, username: String, port: Int) throws {
@@ -170,21 +170,88 @@ final class ConfigManager {
     }
 
     func privateKeyRequiresPassphrase(at sourceURL: URL) throws -> Bool {
-        _ = try readPrivateKey(at: sourceURL)
+        let keyData = try readPrivateKey(at: sourceURL)
+        // Source permissions may be permissive even though the imported copy is
+        // private. Probe a protected copy without changing the original file.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ProxyTray-key-probe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probeURL = directory.appendingPathComponent("identity")
+        guard FileManager.default.createFile(
+            atPath: probeURL.path,
+            contents: keyData,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw NSError(domain: "ProxyTray", code: 0, userInfo: [NSLocalizedDescriptionKey: "Could not prepare the SSH private key for validation"])
+        }
 
         let process = Process()
+        let errors = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-        process.arguments = ["-y", "-P", "", "-f", sourceURL.path]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.arguments = ["-y", "-P", "", "-f", probeURL.path]
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errors
         try process.run()
+        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return process.terminationStatus != 0
+        guard process.terminationStatus != 0 else { return false }
+        let message = (String(data: errorData, encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: probeURL.path, with: sourceURL.path)
+        if message.contains("incorrect passphrase supplied to decrypt private key") {
+            return true
+        }
+        throw NSError(
+            domain: "ProxyTray",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Could not validate the SSH private key" : message]
+        )
     }
 
     func importPrivateKey(from sourceURL: URL) throws -> String {
-        let keyData = try readPrivateKey(at: sourceURL)
         let destinationURL = URL(fileURLWithPath: importedPrivateKeyPath)
+        return try importPrivateKey(from: sourceURL, to: destinationURL)
+    }
+
+    /// A unique path lets settings be switched atomically without overwriting
+    /// the key or Keychain item used by the current configuration.
+    func stagePrivateKey(from sourceURL: URL) throws -> String {
+        let destinationURL = URL(fileURLWithPath: importedPrivateKeyPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("identity-\(UUID().uuidString)")
+        do {
+            return try importPrivateKey(from: sourceURL, to: destinationURL)
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    func isManagedPrivateKey(at path: String) -> Bool {
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL
+        let legacy = URL(fileURLWithPath: importedPrivateKeyPath).standardizedFileURL
+        guard candidate.deletingLastPathComponent() == legacy.deletingLastPathComponent() else { return false }
+        if candidate.lastPathComponent == "identity" { return true }
+        let name = candidate.lastPathComponent
+        return name.hasPrefix("identity-") && UUID(uuidString: String(name.dropFirst("identity-".count))) != nil
+    }
+
+    func removeManagedPrivateKey(at path: String) throws {
+        guard isManagedPrivateKey(at: path), FileManager.default.fileExists(atPath: path) else { return }
+        try FileManager.default.removeItem(atPath: path)
+    }
+
+    private func importPrivateKey(from sourceURL: URL, to destinationURL: URL) throws -> String {
+        let keyData = try readPrivateKey(at: sourceURL)
         let keyDirectory = destinationURL.deletingLastPathComponent()
 
         try FileManager.default.createDirectory(
