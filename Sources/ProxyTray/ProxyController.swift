@@ -1,6 +1,6 @@
 import Cocoa
 
-struct ProxyState {
+struct ProxyState: Equatable {
     var proxyActive: Bool
     var routeAll: Bool
     var connecting = false
@@ -18,7 +18,9 @@ final class ProxyController {
     }
 
     private(set) var state: ProxyState {
-        didSet { onStateChange?(state) }
+        didSet {
+            if state != oldValue { onStateChange?(state) }
+        }
     }
 
     var onStateChange: ((ProxyState) -> Void)?
@@ -198,8 +200,7 @@ final class ProxyController {
         existingTunnelMonitor.stop()
         ssh.stop()
         let failures = network.disableProxy()
-        state.connecting = false
-        state.proxyActive = false
+        state = ProxyState(proxyActive: false, routeAll: state.routeAll)
         return failures
     }
 
