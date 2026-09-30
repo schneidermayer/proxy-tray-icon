@@ -186,7 +186,7 @@ final class SystemNetworkProxyStore: NetworkProxyStore {
 
     private func systemError(_ operation: String) -> NSError {
         let code = SCError()
-        let detail = SCErrorString(code).map { String(cString: $0) } ?? "Unknown SystemConfiguration error"
+        let detail = String(cString: SCErrorString(code))
         return NSError(domain: "ProxyTray.Network", code: Int(code), userInfo: [NSLocalizedDescriptionKey: "\(operation) failed: \(detail) (\(code))"])
     }
 }
