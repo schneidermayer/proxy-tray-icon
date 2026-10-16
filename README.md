@@ -10,7 +10,7 @@ A small Swift 5 menu bar agent that starts an SSH dynamic tunnel with public-key
 
 ### Build a standalone app bundle
 If you want a double-clickable `.app` without manual steps:
-1. Keep the base release number in `VERSION` (current: `1.2`) and commit the scoped changes before building.
+1. Keep the base release number in `VERSION` (current: `1.3`) and commit the scoped changes before building.
 2. Build with the number of commits since the latest release tag:
 
    ```sh
