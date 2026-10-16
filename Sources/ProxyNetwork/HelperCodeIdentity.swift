@@ -6,10 +6,12 @@ import Security
 public enum HelperCodeIdentity {
     public static func requirement(for identifier: String) throws -> String {
         var code: SecCode?
+        var staticCode: SecStaticCode?
         var information: CFDictionary?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
               SecCodeCheckValidity(code, [], nil) == errSecSuccess,
-              SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
               let information = information as? [String: Any],
               let team = information[kSecCodeInfoTeamIdentifier as String] as? String,
               !team.isEmpty,
