@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import ProxyTray
 
@@ -110,6 +111,97 @@ final class HelperRegistrationTests: XCTestCase {
             XCTAssertNil(fixture.storedVersion)
         }
     }
+
+    func testTransientPermissionFailureAfterUnregisterRetriesAndSavesOnce() throws {
+        let fixture = RegistrationFixture(status: .enabled, storedVersion: "1.1-10")
+        fixture.service.registerOutcomes = [
+            (.notRegistered, NSError(domain: "SMAppServiceErrorDomain", code: 1)),
+            (.enabled, nil)
+        ]
+
+        XCTAssertEqual(try fixture.registration.prepare(version: "1.1-11"), .enabled)
+
+        XCTAssertEqual(fixture.operations, ["unregister", "register", "wait", "register", "save:1.1-11"])
+        XCTAssertEqual(fixture.retryDelays, [0.1])
+        XCTAssertEqual(fixture.storedVersion, "1.1-11")
+    }
+
+    func testPostUnregisterRetryExhaustionPreservesPreviousVersion() {
+        let fixture = RegistrationFixture(status: .enabled, storedVersion: "1.1-10")
+        fixture.service.statusAfterRegister = .notRegistered
+        fixture.service.registerError = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+
+        XCTAssertThrowsError(try fixture.registration.prepare(version: "1.1-11")) {
+            XCTAssertEqual(($0 as NSError).domain, "SMAppServiceErrorDomain")
+            XCTAssertEqual(($0 as NSError).code, 1)
+        }
+
+        XCTAssertEqual(fixture.operations, [
+            "unregister", "register", "wait", "register", "wait", "register", "wait",
+            "register", "wait", "register", "wait", "register"
+        ])
+        XCTAssertEqual(fixture.retryDelays, [0.1, 0.25, 0.5, 1, 2])
+        XCTAssertEqual(fixture.storedVersion, "1.1-10")
+    }
+
+    func testFreshPermissionFailureIsNotRetried() {
+        for domain in ["SMAppServiceErrorDomain", NSPOSIXErrorDomain] {
+            let fixture = RegistrationFixture(status: .notRegistered, storedVersion: nil)
+            fixture.service.statusAfterRegister = .notRegistered
+            fixture.service.registerError = NSError(domain: domain, code: 1)
+
+            XCTAssertThrowsError(try fixture.registration.prepare(version: "1.1-11"))
+
+            XCTAssertEqual(fixture.operations, ["register"])
+            XCTAssertEqual(fixture.retryDelays, [])
+            XCTAssertNil(fixture.storedVersion)
+        }
+    }
+
+    func testPermanentPostUnregisterFailureIsNotRetried() {
+        for error in [
+            NSError(domain: "SMAppServiceErrorDomain", code: 5),
+            NSError(domain: NSPOSIXErrorDomain, code: 1),
+            NSError(domain: "OtherRegistrationError", code: 1)
+        ] {
+            let fixture = RegistrationFixture(status: .enabled, storedVersion: "1.1-10")
+            fixture.service.statusAfterRegister = .notRegistered
+            fixture.service.registerError = error
+
+            XCTAssertThrowsError(try fixture.registration.prepare(version: "1.1-11")) {
+                XCTAssertEqual(($0 as NSError).domain, error.domain)
+                XCTAssertEqual(($0 as NSError).code, error.code)
+            }
+
+            XCTAssertEqual(fixture.operations, ["unregister", "register"])
+            XCTAssertEqual(fixture.retryDelays, [])
+            XCTAssertEqual(fixture.storedVersion, "1.1-10")
+        }
+    }
+
+    func testPostUnregisterPendingApprovalIsReturnedWithoutRetry() throws {
+        let fixture = RegistrationFixture(status: .enabled, storedVersion: "1.1-10")
+        fixture.service.statusAfterRegister = .requiresApproval
+        fixture.service.registerError = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+
+        XCTAssertEqual(try fixture.registration.prepare(version: "1.1-11"), .requiresApproval)
+
+        XCTAssertEqual(fixture.operations, ["unregister", "register", "save:1.1-11"])
+        XCTAssertEqual(fixture.retryDelays, [])
+        XCTAssertEqual(fixture.storedVersion, "1.1-11")
+    }
+
+    func testPostUnregisterMissingHelperIsNotRetried() {
+        let fixture = RegistrationFixture(status: .enabled, storedVersion: "1.1-10")
+        fixture.service.statusAfterRegister = .notFound
+        fixture.service.registerError = NSError(domain: "SMAppServiceErrorDomain", code: 1)
+
+        XCTAssertThrowsError(try fixture.registration.prepare(version: "1.1-11"))
+
+        XCTAssertEqual(fixture.operations, ["unregister", "register"])
+        XCTAssertEqual(fixture.retryDelays, [])
+        XCTAssertEqual(fixture.storedVersion, "1.1-10")
+    }
 }
 
 private enum RegistrationFailure: Error {
@@ -121,12 +213,17 @@ private final class RegistrationFixture {
     let service: FakeHelperService
     var storedVersion: String?
     var operations: [String] = []
+    var retryDelays: [TimeInterval] = []
     lazy var registration = HelperRegistration(
         service: service,
         loadVersion: { [unowned self] in storedVersion },
         saveVersion: { [unowned self] version in
             operations.append("save:\(version)")
             storedVersion = version
+        },
+        waitForRetry: { [unowned self] delay in
+            operations.append("wait")
+            retryDelays.append(delay)
         }
     )
 
@@ -140,6 +237,7 @@ private final class RegistrationFixture {
 private final class FakeHelperService: HelperServiceManaging {
     var status: HelperServiceStatus
     var statusAfterRegister: HelperServiceStatus = .enabled
+    var registerOutcomes: [(status: HelperServiceStatus, error: Error?)] = []
     var registerError: Error?
     var unregisterError: Error?
     var recordOperation: (String) -> Void = { _ in }
@@ -150,6 +248,12 @@ private final class FakeHelperService: HelperServiceManaging {
 
     func register() throws {
         recordOperation("register")
+        if !registerOutcomes.isEmpty {
+            let outcome = registerOutcomes.removeFirst()
+            status = outcome.status
+            if let error = outcome.error { throw error }
+            return
+        }
         status = statusAfterRegister
         if let registerError { throw registerError }
     }
