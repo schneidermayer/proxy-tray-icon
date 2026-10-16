@@ -3,7 +3,7 @@
 A small Swift 5 menu bar agent that starts an SSH dynamic tunnel with public-key authentication, exposes it as a system SOCKS proxy on `127.0.0.1:1080`, and switches the macOS proxy settings between a whitelist-driven PAC file or a route-all mode. The status-bar icon dims when inactive and is fully opaque when active.
 
 ## Build & run
-1. Make sure Xcode command line tools are installed.
+1. Make sure Xcode command line tools and a valid Developer ID Application signing identity are installed. The build script selects an available identity; set `CODE_SIGN_IDENTITY` to its full name or SHA-1 hash to choose explicitly.
 2. Build and install the app using the steps below.
 3. Make sure your SSH public key is authorized on the server and its host key is trusted (see SSH authentication below).
 4. Launch `/Applications/ProxyTray.app`. Open **Update SSH Settings**, enter the server details, choose the private key to import, and then enable the proxy.
@@ -32,6 +32,7 @@ The script writes `APP_VERSION` into the bundle metadata used by Finder and the 
 - **Route All Traffic**: toggles between “all traffic via proxy” (direct SOCKS config) and “whitelist only” (PAC file).
 - **Open Whitelist File**: opens `~/.proxy-tray/whitelist.txt` for editing.
 - **Update SSH Settings**: set SSH host, username, port, and imported private key.
+- **Proxy Access…** (macOS 13+): check or grant persistent permission to change proxy settings.
 - **Quit**: stops proxy/tunnel and exits.
 
 ## Whitelist format
@@ -59,9 +60,24 @@ Wildcards (`*`) are **not** supported. All hosts **not** matching these CIDRs go
 - `~/.proxy-tray/network-state.json` (previous proxy settings and ownership journal)
 - `~/.proxy-tray/run/ssh.sock` (private control socket identifying ProxyTray's SSH tunnel)
 
+## Persistent proxy permission
+
+On macOS 13 and later, ProxyTray registers a signed network helper with macOS. On first launch, open **Proxy Access…**, choose **Open System Settings**, and enable ProxyTray under **General → Login Items & Extensions → App Background Activity** (called **Allow in the Background** on older systems). Approve the macOS prompt, then enable the proxy from the tray menu. Approval survives app restarts and reboots; normal proxy starts and stops do not request Touch ID. You can revoke it from the same System Settings panel.
+
+The helper accepts only signed ProxyTray clients from the same Developer ID team and can update only the six PAC/SOCKS fields already managed by the app. SSH and private keys remain in the user process. ProxyTray keeps the existing ownership journal and restores previous settings as before. New helper builds are re-registered; ordinary app launches leave the registration alone. macOS 12 retains the previous per-session authorization flow.
+
+The installed bundle supports read-only diagnostics:
+
+```sh
+/Applications/ProxyTray.app/Contents/MacOS/ProxyTray --proxy-helper-status
+/Applications/ProxyTray.app/Contents/MacOS/ProxyTray --check-proxy-helper
+```
+
+`--prepare-proxy-helper` registers the bundled helper without changing any proxy settings. Administrator approval must still be granted through macOS. For distribution to other Macs, notarize the signed bundle; a successful local build is not distribution qualification.
+
 ## Notes
 - If the SSH server listens on a different host or port, update it from the tray menu via **Update SSH Settings**.
-- ProxyTray records the previous PAC/SOCKS settings before changing them through macOS SystemConfiguration. It restores only settings it owns, preserves unrelated proxy fields, and leaves later external changes alone. An inactive app with no recorded changes does not modify network settings on quit. macOS may request authorization when changing network preferences.
+- ProxyTray records the previous PAC/SOCKS settings before changing them through macOS SystemConfiguration. It restores only settings it owns, preserves unrelated proxy fields, and leaves later external changes alone. An inactive app with no recorded changes does not modify network settings on quit. On macOS 13+, network authorization is granted once through the helper setup above.
 - Only the SSH process launched by ProxyTray or reached through its private control socket is managed. Other processes using port `1080` are left running; a port conflict causes a connection error.
 - If the managed `ssh` process exits unexpectedly, ProxyTray restores its recorded network changes so macOS is not left pointing at its dead SOCKS listener.
 - A lost connection shows an **SSH connection lost** popup with SSH's error output and exit status or signal. **Copy Details** copies the diagnostic text. Any failure to restore previous proxy settings is included in the same report. Intentional disconnects, restarts, and quitting do not show this popup.

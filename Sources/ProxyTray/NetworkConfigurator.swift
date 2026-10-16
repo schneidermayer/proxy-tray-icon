@@ -8,7 +8,7 @@ final class NetworkConfigurator {
     private let stateURL: URL
 
     init(
-        store: NetworkProxyStore = SystemNetworkProxyStore(),
+        store: NetworkProxyStore = PrivilegedNetworkProxyStore(),
         stateURL: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".proxy-tray/network-state.json")
     ) {

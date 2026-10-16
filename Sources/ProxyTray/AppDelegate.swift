@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if KeyPassphraseVault.answerAskPassIfRequested() {
             return
         }
+        if ProxyHelperCommandLine.runIfRequested() { return }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -28,6 +29,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.bootstrap()
         refreshUI(state: controller.state)
+        if #available(macOS 13.0, *) {
+            ProxyAccessUI.prepareOnLaunch()
+        }
     }
 
     private func buildMenu() {
@@ -49,6 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(withTitle: "Open Whitelist File", action: #selector(openWhitelist), keyEquivalent: "")
         menu.addItem(withTitle: "Update SSH Settings", action: #selector(updateSshSettings), keyEquivalent: "")
+        if #available(macOS 13.0, *) {
+            menu.addItem(withTitle: "Proxy Access…", action: #selector(showProxyAccess), keyEquivalent: "")
+        }
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Restart Proxy", action: #selector(restartProxy), keyEquivalent: "r")
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -62,13 +69,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if controller.state.proxyActive || controller.state.connecting {
             controller.disableProxy()
         } else {
+            if #available(macOS 13.0, *), !ProxyAccessUI.prepareForConnection() { return }
             controller.enableProxy()
         }
     }
     @objc private func toggleRouteAll() { controller.toggleRouteAll() }
     @objc private func openWhitelist() { controller.openWhitelist() }
     @objc private func updateSshSettings() { controller.promptForSshSettings() }
-    @objc private func restartProxy() { controller.restartProxy() }
+    @objc private func restartProxy() {
+        if #available(macOS 13.0, *), !ProxyAccessUI.prepareForConnection() { return }
+        controller.restartProxy()
+    }
+    @objc private func showProxyAccess() {
+        if #available(macOS 13.0, *) { ProxyAccessUI.showStatus() }
+    }
     @objc private func quit() { controller.disableProxy(); NSApp.terminate(nil) }
 
     private func refreshUI(state: ProxyState) {

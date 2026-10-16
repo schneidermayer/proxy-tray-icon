@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/.build/ProxyTray.app"
 BIN="$ROOT/.build/release/ProxyTray"
+HELPER_BIN="$ROOT/.build/release/ProxyTrayHelper"
+HELPER_PLIST="$ROOT/Resources/net.hsch.proxytray.network-helper.plist"
 ICON_SRC="$ROOT/Scripts/icon512.icns"
 ICON_NAME="icon512"
 TARGET="/Applications/ProxyTray.app"
@@ -19,11 +21,32 @@ if [[ -z "$APP_VERSION" ]]; then
   exit 1
 fi
 
+# A persistent privileged service must have a stable signing identity. Do not
+# install an ad-hoc-signed app that cannot establish the helper's trust boundary.
+SIGNING_IDENTITIES="$(security find-identity -v -p codesigning)"
+SIGNING_IDENTITY="$(printf '%s\n' "$SIGNING_IDENTITIES" | awk -v requested="${CODE_SIGN_IDENTITY:-}" '
+  /"Developer ID Application:/ {
+    name = $0
+    sub(/^[^"]*"/, "", name)
+    sub(/".*$/, "", name)
+    if (requested == "" || toupper($2) == toupper(requested) || name == requested) {
+      print $2
+      exit
+    }
+  }
+')"
+
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  echo "No valid Developer ID Application signing identity found. Install one in Keychain, or set CODE_SIGN_IDENTITY to its full name or SHA-1 hash." >&2
+  exit 1
+fi
+
 echo "Building release binary for version $APP_VERSION..."
 swift build -c release
 
 echo "Assembling app bundle at $APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" \
+  "$APP/Contents/Library/HelperTools" "$APP/Contents/Library/LaunchDaemons"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,6 +67,10 @@ EOF
 
 sed -i '' "s/APP_VERSION_PLACEHOLDER/$APP_VERSION/g" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/"
+cp "$HELPER_BIN" "$APP/Contents/Library/HelperTools/ProxyTrayHelper"
+cp "$HELPER_PLIST" "$APP/Contents/Library/LaunchDaemons/"
+chmod 755 "$APP/Contents/Library/HelperTools/ProxyTrayHelper"
+chmod 644 "$APP/Contents/Library/LaunchDaemons/net.hsch.proxytray.network-helper.plist"
 
 if [[ -f "$ICON_SRC" ]]; then
   cp "$ICON_SRC" "$APP/Contents/Resources/$ICON_NAME.icns"
@@ -54,6 +81,13 @@ else
   /usr/libexec/PlistBuddy -c "Delete :CFBundleIconFile" "$APP/Contents/Info.plist" 2>/dev/null || true
   echo "No icon at $ICON_SRC; bundle will use default icon."
 fi
+
+echo "Signing the app and network helper..."
+codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+  --identifier net.hsch.proxytray.network-helper "$APP/Contents/Library/HelperTools/ProxyTrayHelper"
+codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+  --identifier net.hsch.proxytray "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 echo "App bundle assembled."
 
